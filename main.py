@@ -1,0 +1,6 @@
+print("🚀 Welcome to ForgeCore OS")
+print("🔺 Founder Console Loaded")
+print("📊 Daily Dashboard Activated")
+print("🤖 Agent Nexus Hub Online")
+print("📁 Upload Panel Ready")
+print("🔐 Encrypted Vault Secured")
