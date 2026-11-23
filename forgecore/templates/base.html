@@ -27,9 +27,35 @@
 </header>
 <main>
   {% if signed_in and not storage_persistent %}
-  <p class="warn">Ephemeral storage: this host has no persistent disk, so collected
-    files and vault entries are lost when the app is redeployed or recreated.
-    Download a backup from <a href="/backup">Backup</a> after each collection run.</p>
+    {% if replica.configured %}
+    <p class="notice">Ephemeral disk, replicated state: this host has no persistent
+      disk, so every change is encrypted and copied to {{ replica.endpoint }}
+      {% if replica.last_at %}(last copy {{ replica.last_at }}{% if replica.last_ok %}{% else %} failed: {{ replica.last_error }}{% endif %}){% endif %}.
+      A redeploy restores it automatically.
+      <a href="/backup">Manage replication</a></p>
+    {% else %}
+    <p class="warn">Ephemeral storage: this host has no persistent disk, so collected
+      files and vault entries are lost when the app is redeployed or recreated.
+      Configure off-host replication on <a href="/backup">Backup</a> to survive a
+      redeploy, or download a backup after each collection run.</p>
+    {% endif %}
+  {% endif %}
+  {% if signed_in and vault_locked and inline_unlock %}
+  <section class="card">
+    <h2>The vault is locked</h2>
+    <p class="muted">Entries stay encrypted until you unlock them. The key is held in
+      memory only, so a restart locks the vault again.</p>
+    <form method="post" action="/vault/unlock">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="next" value="{{ current_path }}">
+      <label for="unlock-password">Vault password</label>
+      <input id="unlock-password" name="password" type="password" required
+             autocomplete="current-password">
+      <button type="submit">Unlock vault</button>
+    </form>
+    <p class="muted"><a href="/recover">Forgot the vault password? Use the recovery
+      code</a></p>
+  </section>
   {% endif %}
   {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}

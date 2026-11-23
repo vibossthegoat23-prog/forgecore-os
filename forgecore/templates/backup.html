@@ -7,6 +7,55 @@
   audit log. Every member is checksummed, so a truncated or edited archive is
   refused instead of half-restored.</p>
 
+{% if replica_restore_note %}
+<p class="{{ 'notice' if replica_restore_note.ok else 'error' }}">{{ replica_restore_note.message }}</p>
+{% endif %}
+
+<section class="card">
+  <h2>Off-host replication</h2>
+  {% if replica.configured %}
+  <p class="muted">Every change is sealed with AES-256-GCM and copied to
+    <strong>{{ replica.endpoint }}</strong>, and restored automatically when the app
+    starts with no local state &mdash; for example after a redeploy.</p>
+  <dl class="facts">
+    <div><dt>Automatic restore</dt>
+      <dd>{% if replica.autorestore %}on{% else %}off{% endif %}</dd></div>
+    <div><dt>Encryption key</dt>
+      <dd>{% if replica.key_configured %}set{% else %}missing &mdash; replication refused{% endif %}</dd></div>
+    <div><dt>Last copy</dt>
+      <dd>{% if replica.last_at %}{{ replica.last_at }}{% else %}not yet{% endif %}</dd></div>
+    <div><dt>Last result</dt>
+      <dd>{% if replica.last_ok %}succeeded{% elif replica.last_ok is none %}&mdash;{% else %}failed: {{ replica.last_error }}{% endif %}</dd></div>
+  </dl>
+  <form method="post" action="/backup/replica/push" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Push copy now</button>
+  </form>
+  <form method="post" action="/backup/replica/restore" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Restore from replica</button>
+  </form>
+  {% else %}
+  <p class="warn">This host has no persistent disk: the vault, the uploads and the
+    console password are lost when the app is redeployed or recreated. A downloaded
+    backup only helps if you still have the file.</p>
+  <p class="muted">To survive a redeploy automatically, add these in
+    Settings &rarr; Environment variables:</p>
+  <dl class="facts">
+    <div><dt>FORGECORE_REPLICA_URL</dt>
+      <dd>HTTPS endpoint that accepts <code>PUT</code> and returns the latest copy on
+        <code>GET</code></dd></div>
+    <div><dt>FORGECORE_REPLICA_TOKEN</dt>
+      <dd>bearer token sent with every request</dd></div>
+    <div><dt>FORGECORE_REPLICA_KEY</dt>
+      <dd>passphrase that encrypts the copy before it leaves this host</dd></div>
+  </dl>
+  <p class="muted">A folder on this host is not enough &mdash; it is wiped with the
+    container. Until an endpoint is configured, download a backup after each
+    collection run.</p>
+  {% endif %}
+</section>
+
 <section class="card">
   <h2>What is stored now</h2>
   <dl class="facts">
