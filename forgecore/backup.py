@@ -65,7 +65,7 @@ STATE_FILES = (
     # fresh visitor could claim the console.
     "console.json",
 )
-STATE_DIRS = ("vault", "uploads")
+STATE_DIRS = ("vault", "uploads", "data")
 # Every top-level name restore_backup() has to swap in one transaction.
 TOP_LEVEL = (*STATE_DIRS, *STATE_FILES)
 

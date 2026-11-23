@@ -90,6 +90,15 @@ class Home:
     def backups_dir(self) -> Path:
         return self.root / "backups"
 
+    @property
+    def data_dir(self) -> Path:
+        """Collected records live here so backup and the replica carry them."""
+        return self.root / "data"
+
+    @property
+    def dataset_db(self) -> Path:
+        return self.data_dir / "dataset.db"
+
     def storage_is_persistent(self) -> bool:
         """True when the operator declared the home directory as persistent.
 
