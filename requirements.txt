@@ -1,5 +1,7 @@
 # Fully pinned so dependency scanning resolves every version.
-cryptography==48.0.0
+# cryptography must stay on a release without known advisories; 48.0.0 was
+# blocked by PYSEC-2026-3552/3553 and GHSA-537c-gmf6-5ccf.
+cryptography==50.0.2
 fastapi==0.165.0
 Jinja2==3.1.6
 python-multipart==0.0.34
