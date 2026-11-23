@@ -3,9 +3,10 @@
 Security posture
 ----------------
 * **Authentication** - one operator password, compared in constant time. It is
-  read from ``FORGECORE_CONSOLE_PASSWORD``; when unset a random password is
-  generated for the lifetime of the process and printed once to the log, so no
-  password is ever written to disk.
+  read from ``FORGECORE_CONSOLE_PASSWORD`` when set; otherwise a one-time
+  ``/setup`` page stores a PBKDF2-HMAC-SHA256 hash (600k iterations, random
+  salt) in the home directory. Only the hash is written, never the password,
+  and the setup page closes for good once a password exists.
 * **Sessions** - the cookie holds a random identifier only. Session state lives
   in process memory, so logout and expiry are immediate and no user data is
   exposed to the client.
@@ -66,6 +67,7 @@ from forgecore.security import (
     LOGIN_LOCKOUT_SECONDS,
     LOGIN_MAX_ATTEMPTS,
     LOGIN_WINDOW_SECONDS,
+    PASSWORD_MIN_LENGTH,
     SESSION_COOKIE,
     AuditLog,
     RateLimitExceeded,
@@ -74,7 +76,10 @@ from forgecore.security import (
     SessionStore,
     client_key,
     constant_time_equals,
+    load_console_hash,
+    save_console_hash,
     security_headers,
+    verify_password,
 )
 from forgecore.uploads import (
     MAX_UPLOAD_BYTES,
@@ -110,18 +115,21 @@ AUDIT_PAGE_SIZE = 50
 SAFE_DOWNLOAD_TYPE = "application/octet-stream"
 
 
-def _resolve_console_password(home: Home) -> tuple[str, bool]:
-    """Return ``(password, generated)`` for the console login."""
+def _configured_console_password() -> str | None:
+    """Return the operator password from the environment, if one is set.
+
+    ``FORGECORE_CONSOLE_PASSWORD`` wins over everything else: when present the
+    first-run setup page is disabled, so a hosted install can be locked down
+    from configuration alone.
+    """
     configured = os.environ.get(ENV_CONSOLE_PASSWORD, "").strip()
-    if configured:
-        if len(configured) < 12:
-            raise RuntimeError(
-                f"{ENV_CONSOLE_PASSWORD} must be at least 12 characters"
-            )
-        return configured, False
-    # No password configured: generate an ephemeral one. Nothing is written to
-    # disk, so a stolen container image or backup cannot leak it.
-    return secrets.token_urlsafe(24), True
+    if not configured:
+        return None
+    if len(configured) < PASSWORD_MIN_LENGTH:
+        raise RuntimeError(
+            f"{ENV_CONSOLE_PASSWORD} must be at least {PASSWORD_MIN_LENGTH} characters"
+        )
+    return configured
 
 
 class Console:
@@ -144,8 +152,15 @@ class Console:
         self.global_limiter = RateLimiter(
             LOGIN_GLOBAL_MAX_ATTEMPTS, LOGIN_GLOBAL_WINDOW_SECONDS
         )
-        self.password, generated = _resolve_console_password(self.home)
-        self.password_is_generated = generated
+        self.password = _configured_console_password()
+        self.password_hash = (
+            None if self.password else load_console_hash(self.home.console_hash_file)
+        )
+        self.setup_limiter = RateLimiter(
+            LOGIN_MAX_ATTEMPTS,
+            LOGIN_WINDOW_SECONDS,
+            lockout=LOGIN_LOCKOUT_SECONDS,
+        )
         self.iterations = kdf_iterations(DEFAULT_ITERATIONS)
         self._auto_unlock()
         self.audit.record("console.start", version=__version__)
@@ -164,6 +179,28 @@ class Console:
                 self.audit.record("vault.unlock", actor="startup")
         except VaultError as exc:
             self.audit.record("vault.unlock_failed", actor="startup", reason=str(exc))
+
+    # -- console password -------------------------------------------------
+    @property
+    def needs_setup(self) -> bool:
+        """True while no console password exists anywhere (first run)."""
+        return self.password is None and self.password_hash is None
+
+    def check_password(self, candidate: str) -> bool:
+        """Verify a login attempt against the env password or stored hash."""
+        if not candidate:
+            return False
+        if self.password is not None:
+            return constant_time_equals(candidate, self.password)
+        if self.password_hash is not None:
+            return verify_password(self.password_hash, candidate)
+        return False
+
+    def store_password(self, password: str) -> None:
+        """Persist a first-run password as a PBKDF2 hash and adopt it."""
+        save_console_hash(self.home.console_hash_file, password)
+        self.password_hash = load_console_hash(self.home.console_hash_file)
+        self.password = None
 
     # -- helpers ---------------------------------------------------------
     def session_from(self, request: Request) -> Session | None:
@@ -195,10 +232,11 @@ def create_app(home: Home | None = None) -> FastAPI:
     templates.env.filters["human_bytes"] = human_bytes
     templates.env.filters["human_duration"] = human_duration
 
-    if console.password_is_generated:
+    if console.needs_setup:
         print(
-            f"[forgecore] {ENV_CONSOLE_PASSWORD} is not set; generated console "
-            f"password for this process: {console.password}",
+            "[forgecore] no console password configured yet; open /setup in a "
+            f"browser to choose one, or set {ENV_CONSOLE_PASSWORD} to disable "
+            "the setup page.",
             file=sys.stderr,
             flush=True,
         )
@@ -409,6 +447,8 @@ def create_app(home: Home | None = None) -> FastAPI:
     async def login_form(request: Request):
         if console.session_from(request):
             return RedirectResponse("/", status_code=303)
+        if console.needs_setup:
+            return RedirectResponse("/setup", status_code=303)
         return page(request, "login.html")
 
     @app.post("/login", response_class=HTMLResponse)
@@ -416,6 +456,8 @@ def create_app(home: Home | None = None) -> FastAPI:
         request: Request,
         password: Annotated[str, Form()] = "",
     ):
+        if console.needs_setup:
+            return RedirectResponse("/setup", status_code=303)
         key = _client_key(request)
         try:
             console.login_limiter.check(key)
@@ -429,7 +471,7 @@ def create_app(home: Home | None = None) -> FastAPI:
                 error=f"Too many attempts. Try again in {exc.retry_after} seconds.",
             )
 
-        if not password or not constant_time_equals(password, console.password):
+        if not console.check_password(password):
             console.login_limiter.register_failure(key)
             console.global_limiter.register_failure("global")
             console.audit.record("auth.failure", actor=key)
@@ -443,6 +485,73 @@ def create_app(home: Home | None = None) -> FastAPI:
         console.login_limiter.reset(key)
         session = console.sessions.create()
         console.audit.record("auth.success", actor=key)
+        response = RedirectResponse("/", status_code=303)
+        set_session_cookie(response, session, request)
+        return response
+
+    # -- first run --------------------------------------------------------
+    @app.get("/setup", response_class=HTMLResponse)
+    async def setup_form(request: Request):
+        """One-time page that claims a console with no password configured."""
+        if not console.needs_setup:
+            return RedirectResponse("/login", status_code=303)
+        return page(request, "setup.html", min_length=PASSWORD_MIN_LENGTH)
+
+    @app.post("/setup", response_class=HTMLResponse)
+    async def setup_submit(
+        request: Request,
+        password: Annotated[str, Form()] = "",
+        confirm: Annotated[str, Form()] = "",
+    ):
+        if not console.needs_setup:
+            # Setup closes permanently once a password exists, so an already
+            # claimed console cannot be taken over by a later visitor.
+            return RedirectResponse("/login", status_code=303)
+        key = _client_key(request)
+        try:
+            console.setup_limiter.check(key)
+            console.global_limiter.check("global")
+        except RateLimitExceeded as exc:
+            console.audit.record("console.setup_throttled", actor=key)
+            return page(
+                request,
+                "setup.html",
+                status_code=429,
+                min_length=PASSWORD_MIN_LENGTH,
+                error=f"Too many attempts. Try again in {exc.retry_after} seconds.",
+            )
+        problem = None
+        if len(password) < PASSWORD_MIN_LENGTH:
+            problem = f"Use at least {PASSWORD_MIN_LENGTH} characters."
+        elif password != confirm:
+            problem = "The two passwords do not match."
+        if problem:
+            console.setup_limiter.register_failure(key)
+            console.audit.record("console.setup_rejected", actor=key)
+            return page(
+                request,
+                "setup.html",
+                status_code=400,
+                min_length=PASSWORD_MIN_LENGTH,
+                error=problem,
+            )
+        try:
+            console.store_password(password)
+        except OSError:
+            console.audit.record("console.setup_failed", actor=key)
+            return page(
+                request,
+                "setup.html",
+                status_code=500,
+                min_length=PASSWORD_MIN_LENGTH,
+                error=(
+                    "Could not save the password: the data directory is not "
+                    "writable. Check the storage mount and try again."
+                ),
+            )
+        console.login_limiter.reset(key)
+        console.audit.record("console.setup", actor=key)
+        session = console.sessions.create()
         response = RedirectResponse("/", status_code=303)
         set_session_cookie(response, session, request)
         return response
