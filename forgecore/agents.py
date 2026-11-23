@@ -10,11 +10,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 ONLINE_WINDOW_SECONDS = 300
+MAX_REGISTRY_BYTES = 4 * 1024 * 1024
 _FILE_MODE = 0o600
+_DIR_MODE = 0o700
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 _ROLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,47}$")
 
@@ -52,10 +56,27 @@ class AgentRegistry:
 
     # -- storage ---------------------------------------------------------
     def _load(self) -> dict[str, dict]:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            fd = os.open(self.path, flags)
         except FileNotFoundError:
             return {}
+        except OSError as exc:
+            raise AgentError(
+                f"cannot open agent registry {self.path}: {exc.strerror or exc}"
+            ) from None
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise AgentError(f"agent registry is not a regular file: {self.path}")
+            if info.st_size > MAX_REGISTRY_BYTES:
+                raise AgentError(
+                    f"agent registry is larger than {MAX_REGISTRY_BYTES} bytes: {self.path}"
+                )
+            with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as handle:
+                raw = handle.read(MAX_REGISTRY_BYTES + 1)
+        finally:
+            os.close(fd)
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -66,19 +87,30 @@ class AgentRegistry:
         return agents
 
     def _save(self, agents: dict[str, dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
         payload = json.dumps({"version": 1, "agents": agents}, indent=2, sort_keys=True)
-        tmp = self.path.with_name(f".{self.path.name}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
+        # mkstemp gives an unpredictable, exclusively created name; the old
+        # fixed '.<name>.tmp' path could be pre-planted as a symlink.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=self.path.parent, prefix=".tmp-", suffix=".part"
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(tmp, self.path)
+            os.chmod(tmp_name, _FILE_MODE)
+            os.replace(tmp_name, self.path)
         except BaseException:
-            tmp.unlink(missing_ok=True)
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
             raise
+        try:
+            self.path.chmod(_FILE_MODE)
+        except OSError:  # pragma: no cover - exotic filesystems
+            pass
 
     # -- operations ------------------------------------------------------
     def add(self, name: str, role: str = "general") -> dict:
