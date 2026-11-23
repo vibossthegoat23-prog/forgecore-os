@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Audit log &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Audit log</h1>
+<p class="muted">Security-relevant events, newest last. Passwords, key material
+  and payloads are never written here.</p>
+<section class="card">
+  {% if entries %}
+  <table>
+    <thead><tr><th>When</th><th>Event</th><th>Actor</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for entry in entries %}
+      <tr>
+        <td class="mono small">{{ entry.ts }}</td>
+        <td class="mono">{{ entry.event }}</td>
+        <td class="mono small">{{ entry.actor }}</td>
+        <td class="mono small">{{ entry.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No events recorded yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

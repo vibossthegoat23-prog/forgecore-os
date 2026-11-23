@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Vault recovered &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Vault recovered</h1>
+<p class="notice">The master key was re-wrapped under your new password. Your
+  entries are unchanged and readable again.</p>
+<section class="card">
+  <h2>New recovery code</h2>
+  <p class="warn">Shown once. The previous code no longer works.</p>
+  <p class="code">{{ recovery_code }}</p>
+</section>
+<p class="muted">If this console unlocks the vault from
+  <code>FORGECORE_VAULT_PASSWORD</code>, update that value to the new password
+  so the vault unlocks automatically after a restart.</p>
+<p><a class="button" href="/vault">Go to the vault</a></p>
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Agents &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Agent Nexus Hub</h1>
+<p class="muted">Status is derived from heartbeats, never asserted: an agent is
+  online only after checking in within the last {{ window }} seconds.</p>
+
+<section class="card">
+  <h2>Register an agent</h2>
+  <form method="post" action="/agents">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="agent-name">Name</label>
+    <input id="agent-name" name="name" required
+           pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{0,31}" placeholder="scout">
+    <label for="agent-role">Role</label>
+    <input id="agent-role" name="role" value="general">
+    <button type="submit">Register</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Registered agents ({{ agents | length }})</h2>
+  {% if agents %}
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Role</th><th>Status</th><th>Last seen</th>
+        <th class="right">Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for agent in agents %}
+      <tr>
+        <td class="mono">{{ agent.name }}</td>
+        <td>{{ agent.role }}</td>
+        <td><span class="pill {{ agent.status }}">{{ agent.status }}</span></td>
+        <td class="mono small">{{ agent.last_seen or "never" }}</td>
+        <td class="right">
+          <form method="post" action="/agents/{{ agent.name }}/heartbeat" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="ghost">Heartbeat</button>
+          </form>
+          <form method="post" action="/agents/{{ agent.name }}/delete" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No agents registered.</p>
+  {% endif %}
+</section>
+{% endblock %}

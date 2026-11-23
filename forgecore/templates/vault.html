@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Vault &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Encrypted Vault</h1>
+<p class="muted">AES-256-GCM. The master key exists in memory only while unlocked.</p>
+
+{% if locked %}
+<section class="card">
+  <h2>{% if initialized %}Unlock{% else %}Initialise{% endif %} the vault</h2>
+  <p class="muted">
+    {% if initialized %}
+    The password is used to unwrap the master key. It is never stored.
+    {% else %}
+    Choose a password of at least 10 characters. You will be offered a recovery
+    code right after this step.
+    {% endif %}
+  </p>
+  <form method="post" action="/vault/unlock">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="vault-password">Vault password</label>
+    <input id="vault-password" name="password" type="password" required
+           autocomplete="current-password">
+    <button type="submit">{% if initialized %}Unlock{% else %}Create vault{% endif %}</button>
+  </form>
+</section>
+{% else %}
+<section class="card">
+  <h2>Add an entry</h2>
+  <form method="post" action="/vault/entries">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="entry-name">Entry name</label>
+    <input id="entry-name" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,127}"
+           placeholder="quarterly-plan">
+    <label for="entry-content">Content</label>
+    <textarea id="entry-content" name="content" rows="5"
+              placeholder="Encrypted before it touches the disk"></textarea>
+    <button type="submit">Encrypt and store</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Entries ({{ entries | length }})</h2>
+  {% if entries %}
+  <table>
+    <thead><tr><th>Name</th><th class="right">Actions</th></tr></thead>
+    <tbody>
+      {% for name in entries %}
+      <tr>
+        <td class="mono">{{ name }}</td>
+        <td class="right">
+          <a class="button" href="/vault/entries/{{ name }}">Decrypt</a>
+          <form method="post" action="/vault/entries/{{ name }}/delete" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">The vault is empty.</p>
+  {% endif %}
+</section>
+
+<div class="row">
+  <form method="post" action="/vault/recovery" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">{% if recovery %}Rotate recovery code{% else %}Create recovery code{% endif %}</button>
+  </form>
+  <form method="post" action="/vault/lock" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="ghost">Lock vault</button>
+  </form>
+</div>
+{% if not recovery %}
+<p class="warn">No recovery code yet. Without one, a forgotten password means
+  the entries cannot be recovered.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

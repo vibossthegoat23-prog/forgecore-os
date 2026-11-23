@@ -45,6 +45,7 @@ from forgecore.config import (
     kdf_iterations,
 )
 from forgecore.dashboard import snapshot
+from forgecore.console import human_bytes, human_duration
 from forgecore.security import (
     CSRF_FIELD,
     LOGIN_GLOBAL_MAX_ATTEMPTS,
@@ -168,6 +169,8 @@ def create_app(home: Home | None = None) -> FastAPI:
     console = Console(home or default_home())
     app.state.console = console
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+    templates.env.filters["human_bytes"] = human_bytes
+    templates.env.filters["human_duration"] = human_duration
 
     if console.password_is_generated:
         print(

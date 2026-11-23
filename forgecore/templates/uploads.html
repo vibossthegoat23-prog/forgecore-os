@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Uploads &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Upload Panel</h1>
+<p class="muted">Files are stored with owner-only permissions. Limit
+  {{ limit_mb }} MiB per file.</p>
+
+<section class="card">
+  <h2>Add a file</h2>
+  <form method="post" action="/uploads" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="file">File</label>
+    <input id="file" name="file" type="file" required>
+    <button type="submit">Upload</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Stored files ({{ names | length }})</h2>
+  {% if names %}
+  <table>
+    <thead><tr><th>Name</th><th class="right">Actions</th></tr></thead>
+    <tbody>
+      {% for name in names %}
+      <tr>
+        <td class="mono">{{ name }}</td>
+        <td class="right">
+          <a class="button" href="/uploads/{{ name }}">Download</a>
+          <form method="post" action="/uploads/{{ name }}/delete" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No files uploaded yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Daily Dashboard</h1>
+<p class="muted">Every figure below is read from disk right now.</p>
+
+<div class="grid">
+  <div class="card stat">
+    <span class="label">Vault entries</span>
+    <span class="value">{{ data.vault_entries }}</span>
+    <span class="hint">{{ data.vault_algorithm }}</span>
+  </div>
+  <div class="card stat">
+    <span class="label">Uploads</span>
+    <span class="value">{{ data.uploads_count }}</span>
+    <span class="hint">{{ data.uploads_bytes | human_bytes }} of
+      {{ data.upload_limit | human_bytes }} each</span>
+  </div>
+  <div class="card stat">
+    <span class="label">Agents online</span>
+    <span class="value">{{ data.agents_online }}/{{ data.agents_total }}</span>
+    <span class="hint">online = heartbeat in the last 5 minutes</span>
+  </div>
+  <div class="card stat">
+    <span class="label">Disk free</span>
+    <span class="value">{{ data.disk_free_bytes | human_bytes }}</span>
+    <span class="hint">uptime {{ data.uptime_seconds | human_duration }}</span>
+  </div>
+</div>
+
+{% if vault_locked %}
+<p class="warn">The vault is locked. <a href="/vault">Unlock it</a> to read entries.</p>
+{% endif %}
+
+<section class="card">
+  <h2>Environment</h2>
+  <dl class="facts">
+    <dt>Home</dt><dd>{{ data.home }}</dd>
+    <dt>Python</dt><dd>{{ data.python }}</dd>
+    <dt>Platform</dt><dd>{{ data.platform }}</dd>
+    <dt>Vault crypto</dt><dd>{{ data.vault_algorithm }}</dd>
+    <dt>Recovery code</dt>
+    <dd>{% if recovery %}configured{% else %}not configured{% endif %}</dd>
+  </dl>
+</section>
+{% endblock %}

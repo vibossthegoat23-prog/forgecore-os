@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ app_name }}{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="/">{{ app_name }}</a>
+  <span class="ver">v{{ version }}</span>
+  {% if signed_in %}
+  <nav>
+    <a href="/">Dashboard</a>
+    <a href="/uploads">Uploads</a>
+    <a href="/vault">Vault</a>
+    <a href="/agents">Agents</a>
+    <a href="/audit">Audit</a>
+  </nav>
+  <form method="post" action="/logout" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="link">Sign out</button>
+  </form>
+  {% endif %}
+</header>
+<main>
+  {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% block body %}{% endblock %}
+</main>
+<footer>Operator console &middot; all state stays on this host</footer>
+</body>
+</html>

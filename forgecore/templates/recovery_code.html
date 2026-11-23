@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Recovery code &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Recovery code</h1>
+<p class="warn">This code is shown once and is never stored. Write it down and
+  keep it somewhere separate from this machine.</p>
+<section class="card">
+  <p class="code">{{ recovery_code }}</p>
+</section>
+<p class="muted">With this code you can set a new vault password at
+  <a href="/recover">/recover</a> if the password is lost. Each recovery rotates
+  the code, so the one you just used stops working.</p>
+<p><a class="button" href="/vault">Back to the vault</a></p>
+{% endblock %}

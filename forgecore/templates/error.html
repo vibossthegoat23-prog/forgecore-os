@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Error &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Request rejected</h1>
+<p class="error">{{ error }}</p>
+<p><a class="button" href="/">Back to the dashboard</a></p>
+{% endblock %}

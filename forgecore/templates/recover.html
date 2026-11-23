@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Recover vault &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Recover the vault</h1>
+{% if not initialized %}
+<p class="muted">No vault exists on this host yet, so there is nothing to recover.</p>
+{% elif not has_recovery %}
+<p class="warn">This vault has no recovery code configured, so a lost password
+  cannot be recovered. Add a recovery code from the vault page while you still
+  have the password.</p>
+{% else %}
+<p class="muted">Enter the recovery code to wrap the master key under a new
+  password. The old password stops working and a new recovery code is issued.</p>
+<section class="card narrow">
+  <form method="post" action="/recover">
+    <label for="recovery_code">Recovery code</label>
+    <input id="recovery_code" name="recovery_code" required
+           autocomplete="off" spellcheck="false"
+           placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX">
+    <label for="new_password">New vault password</label>
+    <input id="new_password" name="new_password" type="password" required
+           minlength="10" autocomplete="new-password">
+    <label for="confirm_password">Repeat new password</label>
+    <input id="confirm_password" name="confirm_password" type="password" required
+           minlength="10" autocomplete="new-password">
+    <button type="submit">Recover vault</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
