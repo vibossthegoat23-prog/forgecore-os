@@ -562,14 +562,34 @@ def create_app(home: Home | None = None) -> FastAPI:
         csrf_token: Annotated[str, Form()] = "",
         file: UploadFile | None = None,
     ):
+        def uploads_page(**extra: Any):
+            """Render the uploads view with the context its template needs.
+
+            Rendering it from an error branch without ``storage`` and
+            ``pagination`` used to turn a quota refusal into a 500.
+            """
+            listing = paginate(
+                list_uploads(console.home.uploads_dir),
+                page_number(request),
+                UPLOADS_PAGE_SIZE,
+                "/uploads",
+            )
+            return page(
+                request,
+                "uploads.html",
+                session=session,
+                names=listing["items"],
+                pagination=listing,
+                limit_mb=MAX_UPLOAD_BYTES // (1024 * 1024),
+                storage=storage_context(),
+                **extra,
+            )
+
         if not console.csrf_ok(session, csrf_token):
             return page(request, "error.html", session=session, status_code=400,
                         error="Invalid form token. Reload the page and try again.")
-        names = list_uploads(console.home.uploads_dir)
         if file is None or not file.filename:
-            return page(request, "uploads.html", session=session, status_code=400,
-                        names=names, limit_mb=MAX_UPLOAD_BYTES // (1024 * 1024),
-                        error="Choose a file to upload.")
+            return uploads_page(status_code=400, error="Choose a file to upload.")
         try:
             target_name = sanitize_name(file.filename)
             staging = console.home.root / f".incoming-{secrets.token_hex(8)}"
@@ -593,9 +613,7 @@ def create_app(home: Home | None = None) -> FastAPI:
                 "upload.created", actor=_client_key(request), name=target_name, bytes=written
             )
         except UploadError as exc:
-            return page(request, "uploads.html", session=session, status_code=400,
-                        names=list_uploads(console.home.uploads_dir),
-                        limit_mb=MAX_UPLOAD_BYTES // (1024 * 1024), error=str(exc))
+            return uploads_page(status_code=400, error=str(exc))
         return redirect("/uploads")
 
     @app.get("/uploads/{name}")

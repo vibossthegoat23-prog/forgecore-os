@@ -58,15 +58,15 @@ class Home:
 
     @property
     def master_key_file(self) -> Path:
-        return self.root / "master.key"
+        return self.vault_dir / "master.key"
 
     @property
     def recovery_key_file(self) -> Path:
-        return self.root / "recovery.key"
+        return self.vault_dir / "recovery.key"
 
     @property
     def vault_id_file(self) -> Path:
-        return self.root / "vault.id"
+        return self.vault_dir / "vault.id"
 
     @property
     def audit_log_file(self) -> Path:

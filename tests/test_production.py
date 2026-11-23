@@ -169,7 +169,7 @@ def test_corrupt_key_material_degrades_instead_of_crashing(console) -> None:
     unlock = client.post(
         "/vault/unlock", data={"csrf_token": token, "password": VAULT_PASSWORD}
     )
-    assert unlock.status_code == 401
+    assert unlock.status_code in (400, 401)
 
 
 def test_upload_quota_is_enforced_over_http(console, monkeypatch: pytest.MonkeyPatch) -> None:

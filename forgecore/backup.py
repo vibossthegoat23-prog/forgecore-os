@@ -51,15 +51,15 @@ BACKUP_FORMAT = 1
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_MEMBERS = 5000
 
-STATE_FILES = (
-    "master.key",
-    "recovery.key",
-    "vault.id",
-    "agents.json",
-    "audit.log",
-    "audit.log.1",
-)
+# The vault keeps its key material *inside* the vault directory
+# (vault/master.key, vault/recovery.key, vault/vault.id); everything else sits
+# in the home root. These paths are declared explicitly because inferring them
+# once produced a backup that silently carried no key material at all.
+VAULT_KEY_FILES = ("master.key", "recovery.key", "vault.id")
+STATE_FILES = ("agents.json", "audit.log", "audit.log.1", "session.secret")
 STATE_DIRS = ("vault", "uploads")
+# Every top-level name restore_backup() has to swap in one transaction.
+TOP_LEVEL = (*STATE_DIRS, *STATE_FILES)
 
 _FILE_MODE = 0o600
 _DIR_MODE = 0o700
@@ -81,16 +81,26 @@ def _validated_member(name: str) -> str:
     if len(parts) != 2:
         raise BackupError(f"backup contains an unsafe path: {name!r}")
     directory, leaf = parts
-    if directory not in STATE_DIRS:
-        raise BackupError(f"backup contains an unexpected directory: {directory!r}")
-    try:
-        if directory == "vault":
+    if directory == "vault":
+        # Key material is a fixed, known set of names, not a user entry.
+        if leaf in VAULT_KEY_FILES:
+            return name
+        try:
             validate_name(leaf)
-        else:
+        except InvalidEntryName as exc:
+            raise BackupError(
+                f"backup contains an invalid file name: {name!r}"
+            ) from exc
+        return name
+    if directory == "uploads":
+        try:
             sanitize_name(leaf)
-    except (InvalidEntryName, UploadError) as exc:
-        raise BackupError(f"backup contains an invalid file name: {name!r}") from exc
-    return name
+        except UploadError as exc:
+            raise BackupError(
+                f"backup contains an invalid file name: {name!r}"
+            ) from exc
+        return name
+    raise BackupError(f"backup contains an unexpected directory: {directory!r}")
 
 
 def _members(home: Home) -> list[tuple[str, Path]]:
@@ -100,6 +110,14 @@ def _members(home: Home) -> list[tuple[str, Path]]:
         path = home.root / name
         if path.is_file() and not path.is_symlink():
             items.append((name, path))
+    # Key material first: without it a restored vault cannot be opened.
+    key_members: set[str] = set()
+    for key_name in VAULT_KEY_FILES:
+        path = home.vault_dir / key_name
+        if path.is_file() and not path.is_symlink():
+            archive_name = f"vault/{key_name}"
+            items.append((archive_name, path))
+            key_members.add(archive_name)
     for directory_name in STATE_DIRS:
         directory = home.root / directory_name
         if not directory.is_dir():
@@ -107,11 +125,14 @@ def _members(home: Home) -> list[tuple[str, Path]]:
         for item in sorted(directory.iterdir()):
             if item.is_symlink() or not item.is_file() or item.name.startswith("."):
                 continue
+            archive_name = f"{directory_name}/{item.name}"
+            if archive_name in key_members:
+                continue
             try:
-                _validated_member(f"{directory_name}/{item.name}")
+                _validated_member(archive_name)
             except BackupError:
                 continue
-            items.append((f"{directory_name}/{item.name}", item))
+            items.append((archive_name, item))
     return items
 
 
@@ -273,7 +294,7 @@ def restore_backup(home: Home, data: bytes) -> dict[str, Any]:
         replaced.mkdir(mode=_DIR_MODE)
         moved: list[str] = []
         try:
-            for name in (*STATE_FILES, *STATE_DIRS):
+            for name in TOP_LEVEL:
                 current = home.root / name
                 if current.exists() or current.is_symlink():
                     os.replace(current, replaced / name)
