@@ -48,7 +48,8 @@ def _login(client: TestClient) -> None:
 def test_health_endpoint_is_public(client: TestClient) -> None:
     response = client.get("/healthz")
     assert response.status_code == 200
-    assert response.text.strip() == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
 
 
 def test_login_page_renders(client: TestClient) -> None:
