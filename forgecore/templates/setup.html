@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Set up console &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<section class="card narrow">
+  <h1>Set up this console</h1>
+  <p class="muted">No operator password is configured yet. Choose one now.
+    It is stored only as a salted PBKDF2 hash &mdash; the password itself is never
+    written anywhere, so keep it safe. This page disappears once a password is set.</p>
+  <form method="post" action="/setup">
+    <label for="password">New console password</label>
+    <input id="password" name="password" type="password" required
+           minlength="{{ min_length }}" autocomplete="new-password" autofocus>
+    <label for="confirm">Confirm password</label>
+    <input id="confirm" name="confirm" type="password" required
+           minlength="{{ min_length }}" autocomplete="new-password">
+    <button type="submit">Save password</button>
+  </form>
+  <p class="muted small">At least {{ min_length }} characters. This is the console
+    sign-in password, which is separate from the vault password you set later on
+    the Vault page.</p>
+</section>
+{% endblock %}

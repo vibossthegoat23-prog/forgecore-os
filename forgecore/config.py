@@ -77,6 +77,11 @@ class Home:
         return self.root / "session.secret"
 
     @property
+    def console_hash_file(self) -> Path:
+        """Salted hash of the first-run console password (never the password)."""
+        return self.root / "console.json"
+
+    @property
     def backups_dir(self) -> Path:
         return self.root / "backups"
 

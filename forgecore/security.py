@@ -1,6 +1,7 @@
 """Security primitives shared by the CLI and the web console.
 
-Nothing in here stores a password or a plaintext secret on disk.
+Nothing in here stores a password or a plaintext secret on disk: the optional
+console password is kept only as a salted PBKDF2 hash.
 
 * :class:`SessionStore` keeps sessions in process memory only, so a stolen
   cookie database cannot exist and logout is immediate. The cookie carries a
@@ -15,6 +16,8 @@ Nothing in here stores a password or a plaintext secret on disk.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -41,6 +44,10 @@ LOGIN_GLOBAL_WINDOW_SECONDS = 5 * 60
 AUDIT_MAX_BYTES = 1024 * 1024
 _FILE_MODE = 0o600
 
+PASSWORD_MIN_LENGTH = 12
+PASSWORD_ITERATIONS = 600_000
+PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
+
 
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -52,6 +59,110 @@ def constant_time_equals(left: str, right: str) -> bool:
         hashlib.sha256(left.encode("utf-8")).digest(),
         hashlib.sha256(right.encode("utf-8")).digest(),
     )
+
+
+def hash_password(
+    password: str, *, iterations: int = PASSWORD_ITERATIONS
+) -> str:
+    """Return a self-describing PBKDF2-HMAC-SHA256 hash of ``password``.
+
+    The salt is random per call, so two operators choosing the same password
+    produce different hashes and a stolen file cannot be attacked with one
+    precomputed table. The format records the work factor, which lets a future
+    release raise it without invalidating existing hashes.
+    """
+    salt = secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, max(1, int(iterations))
+    )
+    return "{}${}${}${}".format(
+        PASSWORD_HASH_PREFIX,
+        int(iterations),
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(derived).decode("ascii"),
+    )
+
+
+def verify_password(stored: str, password: str) -> bool:
+    """Check ``password`` against a hash from :func:`hash_password`.
+
+    A malformed or unsupported record returns ``False`` instead of raising, so
+    a damaged file degrades to "wrong password" rather than a crash.
+    """
+    if not stored or not password:
+        return False
+    try:
+        prefix, iterations, salt_b64, digest_b64 = stored.split("$")
+        if prefix != PASSWORD_HASH_PREFIX:
+            return False
+        rounds = int(iterations)
+        if rounds < 100_000 or rounds > 5_000_000:
+            return False
+        salt = base64.b64decode(salt_b64.encode("ascii"), validate=True)
+        expected = base64.b64decode(digest_b64.encode("ascii"), validate=True)
+    except (ValueError, TypeError, binascii.Error):
+        return False
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    return hmac.compare_digest(derived, expected)
+
+
+def load_console_hash(path: Path) -> str | None:
+    """Read a stored console password hash, or ``None`` when there is none."""
+    try:
+        raw = path.read_text("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    digest = data.get("password_hash") if isinstance(data, dict) else None
+    if not isinstance(digest, str) or not digest.startswith(PASSWORD_HASH_PREFIX):
+        return None
+    return digest
+
+
+def save_console_hash(
+    path: Path, password: str, *, iterations: int = PASSWORD_ITERATIONS
+) -> None:
+    """Atomically write a password hash with owner-only permissions.
+
+    The password itself is never written: only the salted hash, so a copy of
+    the data directory cannot reveal it.
+    """
+    payload = {
+        "password_hash": hash_password(password, iterations=iterations),
+        "created": utcnow_iso(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(
+            tmp,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            _FILE_MODE,
+        )
+    except OSError:
+        raise
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    try:
+        os.chmod(path, _FILE_MODE)
+    except OSError:  # pragma: no cover - filesystems without chmod
+        pass
 
 
 class RateLimitExceeded(Exception):
