@@ -29,7 +29,9 @@
 </div>
 
 {% if vault_locked %}
-<p class="warn">The vault is locked. <a href="/vault">Unlock it</a> to read entries.</p>
+<p class="warn">The vault is locked, so entry contents stay unreadable until you unlock
+  it. Use the unlock box above, or <a href="/recover">the recovery code</a> if you
+  have forgotten the password.</p>
 {% endif %}
 
 <section class="card">
