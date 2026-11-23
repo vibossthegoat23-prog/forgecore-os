@@ -11,6 +11,7 @@ import pytest
 from forgecore.vault import (
     AVAILABLE,
     MAGIC,
+    MAX_ITERATIONS,
     MIN_ITERATIONS,
     InvalidEntryName,
     Vault,
@@ -91,10 +92,27 @@ def test_kdf_cost_is_never_stored_below_the_minimum(vault: Vault) -> None:
     assert iterations == MIN_ITERATIONS
 
 
+def test_kdf_cost_is_never_stored_above_the_maximum(vault: Vault) -> None:
+    """A huge requested cost is clamped instead of stalling the process."""
+    path = vault.put("note", b"x", PASSWORD, iterations=10**9)
+    (iterations,) = struct.unpack_from(">I", path.read_bytes(), len(MAGIC))
+    assert iterations == MAX_ITERATIONS
+
+
 def test_entry_with_unsafe_kdf_cost_is_refused(vault: Vault) -> None:
     path = vault.put("note", b"x", PASSWORD, **FAST)
     blob = bytearray(path.read_bytes())
     struct.pack_into(">I", blob, len(MAGIC), 1000)
+    path.write_bytes(bytes(blob))
+    with pytest.raises(VaultError, match="unsafe KDF cost"):
+        vault.get("note", PASSWORD)
+
+
+def test_entry_with_absurd_kdf_cost_is_refused(vault: Vault) -> None:
+    """A crafted header cannot force a multi-hour key derivation."""
+    path = vault.put("note", b"x", PASSWORD, **FAST)
+    blob = bytearray(path.read_bytes())
+    struct.pack_into(">I", blob, len(MAGIC), 0xFFFFFFFF)
     path.write_bytes(bytes(blob))
     with pytest.raises(VaultError, match="unsafe KDF cost"):
         vault.get("note", PASSWORD)
@@ -121,6 +139,13 @@ def test_invalid_entry_names_are_rejected(vault: Vault, name: str) -> None:
         vault.put(name, b"x", PASSWORD, **FAST)
 
 
+def test_internal_state_names_are_reserved(vault: Vault) -> None:
+    """An entry may not shadow the wrapped master key or vault id."""
+    for reserved in ("master.key", "recovery.key", "vault.id"):
+        with pytest.raises(InvalidEntryName):
+            vault.put(reserved, b"x", PASSWORD, **FAST)
+
+
 def test_traversal_name_cannot_escape_the_vault(vault: Vault) -> None:
     with pytest.raises(InvalidEntryName):
         vault.put("../../etc/passwd", b"x", PASSWORD, **FAST)
@@ -136,6 +161,12 @@ def test_list_delete_and_exists(vault: Vault) -> None:
     assert vault.delete("alpha") is False
     assert vault.list() == ["zeta"]
     assert vault.exists("alpha") is False
+
+
+def test_list_ignores_internal_state_files(vault: Vault) -> None:
+    vault.put("note", b"1", PASSWORD, **FAST)
+    vault.init_vault(PASSWORD, **FAST)
+    assert vault.list() == ["note"]
 
 
 def test_list_on_missing_directory_is_empty(tmp_path: Path) -> None:
