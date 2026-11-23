@@ -19,6 +19,7 @@ The home directory holds three kinds of file:
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,9 +29,13 @@ ENV_CONSOLE_PASSWORD = "FORGECORE_CONSOLE_PASSWORD"
 ENV_RECOVERY_CODE = "FORGECORE_RECOVERY_CODE"
 ENV_KDF_ITERATIONS = "FORGECORE_KDF_ITERATIONS"
 ENV_SESSION_SECRET = "FORGECORE_SESSION_SECRET"
+ENV_PERSISTENT = "FORGECORE_PERSISTENT_STORAGE"
+ENV_UPLOAD_QUOTA = "FORGECORE_UPLOAD_QUOTA_BYTES"
 
 DEFAULT_DIR_MODE = 0o700
 DEFAULT_FILE_MODE = 0o600
+DEFAULT_UPLOAD_QUOTA_BYTES = 2 * 1024 * 1024 * 1024
+MIN_FREE_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,61 @@ class Home:
     def session_secret_file(self) -> Path:
         return self.root / "session.secret"
 
+    @property
+    def backups_dir(self) -> Path:
+        return self.root / "backups"
+
+    def storage_is_persistent(self) -> bool:
+        """True when the operator declared the home directory as persistent.
+
+        AppJet's Free plan has no persistent disk, so the container layer is
+        wiped on redeploy. The console warns about that unless the operator
+        states the data really survives a restart.
+        """
+        return os.environ.get(ENV_PERSISTENT, "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def free_bytes(self) -> int:
+        """Free space on the filesystem holding the home directory."""
+        try:
+            return shutil.disk_usage(self.root).free
+        except OSError:  # pragma: no cover - exotic filesystems
+            return 0
+
+    def check_writable(self) -> None:
+        """Prove the state directory is writable, or fail with a clear reason.
+
+        Called at startup so a read-only or full volume is reported immediately
+        instead of surfacing later as a half-written vault entry.
+        """
+        self.ensure()
+        probe = self.root / f".write-probe-{os.getpid()}"
+        try:
+            fd = os.open(
+                probe,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0),
+                DEFAULT_FILE_MODE,
+            )
+            try:
+                os.write(fd, b"probe")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            raise RuntimeError(
+                f"cannot write to {self.root} ({exc.strerror or exc}); mount a "
+                f"writable volume and point {ENV_HOME} at it"
+            ) from None
+        finally:
+            probe.unlink(missing_ok=True)
+
     def ensure(self) -> "Home":
         """Create the home directories with owner-only permissions."""
         for directory in (self.root, self.vault_dir, self.uploads_dir):
@@ -87,6 +147,18 @@ def default_home() -> Home:
     raw = os.environ.get(ENV_HOME)
     root = Path(raw).expanduser() if raw else Path.home() / ".forgecore"
     return Home(root=root)
+
+
+def upload_quota(default: int = DEFAULT_UPLOAD_QUOTA_BYTES) -> int:
+    """Return the total uploads quota from ``FORGECORE_UPLOAD_QUOTA_BYTES``."""
+    raw = os.environ.get(ENV_UPLOAD_QUOTA)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 def kdf_iterations(default: int) -> int:

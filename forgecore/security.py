@@ -279,6 +279,18 @@ class AuditLog:
         return entries
 
 
+    def page(self, page: int = 1, size: int = 50) -> list[dict]:
+        """Return one page of events, newest last, for the console views.
+
+        Reading is bounded: at most ``size`` entries are returned however large
+        the log grows, so the audit view stays fast during long collection runs.
+        """
+        size = max(1, min(int(size), 500))
+        page = max(1, int(page))
+        entries = self.tail(size * page)
+        return entries[max(0, len(entries) - size) :]
+
+
 def security_headers(*, allow_forms: bool = True) -> dict[str, str]:
     """Strict headers for a server-rendered, JavaScript-free UI."""
     csp = (

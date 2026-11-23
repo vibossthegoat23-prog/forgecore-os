@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import stat
 from pathlib import Path
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024
+DEFAULT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MIN_FREE_BYTES = 64 * 1024 * 1024
+ENV_UPLOAD_QUOTA = "FORGECORE_UPLOAD_QUOTA_BYTES"
 _MAX_NAME_LENGTH = 200
 _FILE_MODE = 0o600
 _DIR_MODE = 0o700
@@ -59,6 +63,52 @@ def sanitize_name(raw: str) -> str:
             f"invalid upload name {raw!r}: use letters, digits, '.', '_' or '-'"
         )
     return name
+
+
+def upload_quota() -> int:
+    """Total bytes all stored uploads may occupy."""
+    raw = os.environ.get(ENV_UPLOAD_QUOTA)
+    if not raw:
+        return DEFAULT_TOTAL_BYTES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TOTAL_BYTES
+    return value if value > 0 else DEFAULT_TOTAL_BYTES
+
+
+def free_bytes(dest_dir: Path | str) -> int:
+    """Free space on the filesystem holding ``dest_dir``."""
+    directory = Path(dest_dir)
+    probe = directory if directory.exists() else directory.parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:  # pragma: no cover - exotic filesystems
+        return 0
+
+
+def ensure_capacity(dest_dir: Path | str, incoming_bytes: int = 0) -> None:
+    """Refuse an upload that would exceed the quota or fill the disk.
+
+    Without this a collection run keeps accepting files until the volume is
+    full, at which point every write - including vault writes and the audit
+    log - starts failing. Failing the upload early keeps the rest working.
+    """
+    incoming = max(0, int(incoming_bytes))
+    _, total = stats(dest_dir)
+    quota = upload_quota()
+    if total + incoming > quota:
+        raise UploadError(
+            f"upload would use {(total + incoming) / (1024 * 1024):.1f} MiB of the "
+            f"{quota / (1024 * 1024):.0f} MiB quota; delete files or raise "
+            f"{ENV_UPLOAD_QUOTA}"
+        )
+    free = free_bytes(dest_dir)
+    if free and free - incoming < MIN_FREE_BYTES:
+        raise UploadError(
+            f"not enough free disk space: {free / (1024 * 1024):.1f} MiB left, "
+            f"at least {MIN_FREE_BYTES / (1024 * 1024):.0f} MiB must stay free"
+        )
 
 
 def _open_source(src: Path) -> int:
@@ -109,6 +159,7 @@ def intake(
             raise UploadError(
                 f"file is {size} bytes, the upload limit is {max_bytes} bytes"
             )
+        ensure_capacity(directory, size)
         out_flags = (
             os.O_WRONLY
             | os.O_CREAT
