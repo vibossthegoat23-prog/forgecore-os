@@ -120,7 +120,7 @@ def render_dashboard(status: dict[str, Any]) -> list[str]:
         f"{symbols['dashboard']} {status['app']} dashboard {dash} uptime "
         f"{human_duration(status['uptime_seconds'])}",
         f"  home            {status['home']}",
-        f"  vault           "
+        "  vault           "
         + (
             f"{status['vault_entries']} entries ({status['vault_algorithm']})"
             if status["vault_available"]
