@@ -80,7 +80,14 @@ def test_backup_is_verified_before_it_is_trusted(home: Home) -> None:
     data, _ = create_backup(home)
     parsed = inspect_backup(data)
     assert parsed["manifest"]["format"] == 1
-    assert set(parsed["blobs"]) == {"vault/launch-code", "uploads/note.txt"}
+    # Key material must travel with the archive, otherwise the restored vault
+    # is unopenable ciphertext.
+    assert set(parsed["blobs"]) == {
+        "vault/launch-code",
+        "vault/master.key",
+        "vault/vault.id",
+        "uploads/note.txt",
+    }
 
 
 def test_archive_without_manifest_is_rejected(home: Home) -> None:
