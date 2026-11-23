@@ -26,15 +26,28 @@ from __future__ import annotations
 import os
 import secrets
 import sys
+import traceback
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Form, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response as RawResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response as RawResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from forgecore import APP_NAME, __version__
+from forgecore.backup import (
+    MAX_ARCHIVE_BYTES,
+    BackupError,
+    create_backup,
+    restore_backup,
+)
 from forgecore.agents import ONLINE_WINDOW_SECONDS, AgentError, AgentRegistry
 from forgecore.config import (
     ENV_CONSOLE_PASSWORD,
@@ -65,12 +78,15 @@ from forgecore.security import (
 )
 from forgecore.uploads import (
     MAX_UPLOAD_BYTES,
+    MIN_FREE_BYTES,
     UploadError,
     delete_upload,
     intake,
     list_uploads,
     open_upload,
     sanitize_name,
+    stats,
+    upload_quota,
 )
 from forgecore.vault import (
     DEFAULT_ITERATIONS,
@@ -86,6 +102,10 @@ STATIC_DIR = BASE_DIR / "static"
 
 MAX_FORM_BYTES = MAX_UPLOAD_BYTES + (1024 * 1024)
 CONSOLE_PASSWORD_FILE = "console.password"
+
+UPLOADS_PAGE_SIZE = 25
+VAULT_PAGE_SIZE = 25
+AUDIT_PAGE_SIZE = 50
 
 SAFE_DOWNLOAD_TYPE = "application/octet-stream"
 
@@ -109,6 +129,9 @@ class Console:
 
     def __init__(self, home: Home) -> None:
         self.home = home.ensure()
+        # Fail fast: a read-only or full volume must be reported at startup,
+        # not as a half-written vault entry during a collection run.
+        self.home.check_writable()
         self.vault = Vault(self.home.vault_dir)
         self.agents = AgentRegistry(self.home.agents_file)
         self.audit = AuditLog(self.home.audit_log_file)
@@ -187,7 +210,14 @@ def create_app(home: Home | None = None) -> FastAPI:
     @app.middleware("http")
     async def harden(request: Request, call_next):
         length = request.headers.get("content-length")
-        if length and length.isdigit() and int(length) > MAX_FORM_BYTES:
+        # A backup restore is a legitimate large upload; every other form keeps
+        # the small limit so a huge body cannot be streamed into memory.
+        limit = (
+            MAX_ARCHIVE_BYTES + (1024 * 1024)
+            if request.url.path == "/backup/restore"
+            else MAX_FORM_BYTES
+        )
+        if length and length.isdigit() and int(length) > limit:
             return HTMLResponse(
                 "<h1>413 Payload Too Large</h1>", status_code=413,
                 headers=security_headers(),
@@ -213,11 +243,49 @@ def create_app(home: Home | None = None) -> FastAPI:
             "signed_in": session is not None,
             "notice": None,
             "error": None,
+            "storage_persistent": console.home.storage_is_persistent(),
         }
         base.update(context)
         return templates.TemplateResponse(
             request, template, base, status_code=status_code
         )
+
+    def storage_context() -> dict[str, Any]:
+        count, total = stats(console.home.uploads_dir)
+        return {
+            "persistent": console.home.storage_is_persistent(),
+            "free_bytes": console.home.free_bytes(),
+            "upload_count": count,
+            "upload_bytes": total,
+            "upload_quota_bytes": upload_quota(),
+        }
+
+    def page_number(request: Request) -> int:
+        try:
+            return max(1, int(request.query_params.get("page", "1")))
+        except (TypeError, ValueError):
+            return 1
+
+    def paginate(
+        items: list[Any], current: int, size: int, base: str
+    ) -> dict[str, Any]:
+        """Return one bounded page of ``items`` plus the pager metadata."""
+        total = len(items)
+        pages = max(1, (total + size - 1) // size)
+        current = min(max(1, current), pages)
+        start = (current - 1) * size
+        chunk = items[start : start + size]
+        return {
+            "items": chunk,
+            "page": current,
+            "pages": pages,
+            "total": total,
+            "start": start + 1 if total else 0,
+            "end": start + len(chunk),
+            "base": base,
+            "has_prev": current > 1,
+            "has_next": current < pages,
+        }
 
     def current_session(request: Request) -> Session | None:
         return console.session_from(request)
@@ -276,15 +344,51 @@ def create_app(home: Home | None = None) -> FastAPI:
         )
 
     # -- public routes ---------------------------------------------------
-    @app.get("/healthz")
-    async def healthz() -> dict[str, Any]:
-        return {"status": "ok", "app": APP_NAME, "version": __version__}
+    def health_payload() -> tuple[dict[str, Any], int]:
+        """Liveness plus the state the app needs to keep accepting data.
 
-    # The hosting edge answers /healthz itself, so the same liveness answer is
-    # also exposed on /health, which is what the container healthcheck uses.
+        A process that cannot write its own state is not healthy: the next
+        collection write would fail, so the probe reports 503 instead of
+        staying green while every upload errors.
+        """
+        writable = True
+        reason = None
+        try:
+            console.home.check_writable()
+        except (RuntimeError, OSError) as exc:
+            writable = False
+            reason = str(exc)
+        free = console.home.free_bytes()
+        if writable and free and free < MIN_FREE_BYTES:
+            writable = False
+            reason = f"only {free // (1024 * 1024)} MiB free"
+        count, total = stats(console.home.uploads_dir)
+        payload: dict[str, Any] = {
+            "status": "ok" if writable else "degraded",
+            "app": APP_NAME,
+            "version": __version__,
+            "storage": {
+                "writable": writable,
+                "persistent": console.home.storage_is_persistent(),
+                "free_bytes": free,
+                "reason": reason,
+            },
+            "uploads": {"count": count, "bytes": total},
+            "vault_locked": not console.vault.unlocked,
+        }
+        return payload, 200 if writable else 503
+
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        payload, status_code = health_payload()
+        return JSONResponse(payload, status_code=status_code)
+
+    # The hosting edge answers /healthz itself, so the same answer is exposed
+    # on /health, which is what the container healthcheck uses.
     @app.get("/health")
-    async def health() -> dict[str, Any]:
-        return {"status": "ok", "app": APP_NAME, "version": __version__}
+    async def health() -> JSONResponse:
+        payload, status_code = health_payload()
+        return JSONResponse(payload, status_code=status_code)
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_form(request: Request):
@@ -420,12 +524,20 @@ def create_app(home: Home | None = None) -> FastAPI:
 
     @app.get("/uploads", response_class=HTMLResponse)
     async def uploads_view(request: Request, session: Session = Depends(require_session)):
+        listing = paginate(
+            list_uploads(console.home.uploads_dir),
+            page_number(request),
+            UPLOADS_PAGE_SIZE,
+            "/uploads",
+        )
         return page(
             request,
             "uploads.html",
             session=session,
-            names=list_uploads(console.home.uploads_dir),
+            names=listing["items"],
+            pagination=listing,
             limit_mb=MAX_UPLOAD_BYTES // (1024 * 1024),
+            storage=storage_context(),
         )
 
     @app.post("/uploads", response_class=HTMLResponse)
@@ -498,11 +610,15 @@ def create_app(home: Home | None = None) -> FastAPI:
 
     @app.get("/vault", response_class=HTMLResponse)
     async def vault_view(request: Request, session: Session = Depends(require_session)):
+        listing = paginate(
+            console.vault.list(), page_number(request), VAULT_PAGE_SIZE, "/vault"
+        )
         return page(
             request,
             "vault.html",
             session=session,
-            entries=console.vault.list(),
+            entries=listing["items"],
+            pagination=listing,
             locked=not console.vault.unlocked,
             initialized=console.vault.is_initialized(),
             recovery=console.vault.has_recovery(),
@@ -684,8 +800,196 @@ def create_app(home: Home | None = None) -> FastAPI:
 
     @app.get("/audit", response_class=HTMLResponse)
     async def audit_view(request: Request, session: Session = Depends(require_session)):
+        number = page_number(request)
+        entries = console.audit.page(number, AUDIT_PAGE_SIZE)
+        # The log is append-only and unbounded, so paging walks backwards from
+        # the newest event instead of counting the whole file.
+        pagination = {
+            "items": entries,
+            "page": number,
+            "pages": None,
+            "total": None,
+            "start": (number - 1) * AUDIT_PAGE_SIZE,
+            "end": (number - 1) * AUDIT_PAGE_SIZE + len(entries),
+            "base": "/audit",
+            "has_prev": number > 1,
+            "has_next": len(entries) == AUDIT_PAGE_SIZE,
+        }
         return page(
-            request, "audit.html", session=session, entries=console.audit.tail(50)
+            request,
+            "audit.html",
+            session=session,
+            entries=entries,
+            pagination=pagination,
+        )
+
+    # -- backup / restore ------------------------------------------------
+    @app.get("/backup", response_class=HTMLResponse)
+    async def backup_view(request: Request, session: Session = Depends(require_session)):
+        return page(
+            request,
+            "backup.html",
+            session=session,
+            storage=storage_context(),
+            backup_limit_mb=MAX_ARCHIVE_BYTES // (1024 * 1024),
+        )
+
+    @app.post("/backup/export", response_class=HTMLResponse)
+    async def backup_export(
+        request: Request,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+    ):
+        context = {
+            "storage": storage_context(),
+            "backup_limit_mb": MAX_ARCHIVE_BYTES // (1024 * 1024),
+        }
+        if not console.csrf_ok(session, csrf_token):
+            return page(
+                request,
+                "backup.html",
+                session=session,
+                status_code=400,
+                error="Invalid form token. Reload the page and try again.",
+                **context,
+            )
+        try:
+            data, filename = create_backup(console.home)
+        except (BackupError, OSError) as exc:
+            console.audit.record("backup.failed", actor=_client_key(request))
+            return page(
+                request,
+                "backup.html",
+                session=session,
+                status_code=500,
+                error=f"Backup failed: {exc}",
+                **context,
+            )
+        console.audit.record(
+            "backup.exported", actor=_client_key(request), bytes=len(data)
+        )
+        return download(data, filename)
+
+    @app.post("/backup/restore", response_class=HTMLResponse)
+    async def backup_restore(
+        request: Request,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+        file: UploadFile | None = None,
+    ):
+        context = {
+            "storage": storage_context(),
+            "backup_limit_mb": MAX_ARCHIVE_BYTES // (1024 * 1024),
+        }
+        if not console.csrf_ok(session, csrf_token):
+            return page(
+                request,
+                "backup.html",
+                session=session,
+                status_code=400,
+                error="Invalid form token. Reload the page and try again.",
+                **context,
+            )
+        if file is None or not file.filename:
+            return page(
+                request,
+                "backup.html",
+                session=session,
+                status_code=400,
+                error="Choose a backup archive to restore.",
+                **context,
+            )
+        buffer = bytearray()
+        while True:
+            chunk = await file.read(64 * 1024)
+            if not chunk:
+                break
+            buffer.extend(chunk)
+            if len(buffer) > MAX_ARCHIVE_BYTES:
+                return page(
+                    request,
+                    "backup.html",
+                    session=session,
+                    status_code=413,
+                    error="That archive is larger than the supported backup size.",
+                    **context,
+                )
+        try:
+            summary = restore_backup(console.home, bytes(buffer))
+        except (BackupError, OSError) as exc:
+            console.audit.record(
+                "backup.restore_failed", actor=_client_key(request), reason=str(exc)
+            )
+            return page(
+                request,
+                "backup.html",
+                session=session,
+                status_code=400,
+                error=f"Restore rejected: {exc}. Nothing was changed.",
+                **context,
+            )
+        # The restored key material is not the material that was in memory.
+        console.vault = Vault(console.home.vault_dir)
+        console.agents = AgentRegistry(console.home.agents_file)
+        console.audit.record(
+            "backup.restored", actor=_client_key(request), files=summary["files"]
+        )
+        return page(
+            request,
+            "backup.html",
+            session=session,
+            notice=(
+                f"Restored {summary['files']} files ({summary['vault_entries']} vault "
+                f"entries, {summary['uploads']} uploads) from the backup taken "
+                f"{summary['created_at']}. The vault is locked again: unlock it with "
+                "the password that belongs to that backup."
+            ),
+            **context,
+        )
+
+    # -- failure handling ------------------------------------------------
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException):
+        if exc.status_code == 404:
+            return page(
+                request,
+                "error.html",
+                status_code=404,
+                error="That page does not exist.",
+            )
+        return JSONResponse(
+            {"detail": exc.detail},
+            status_code=exc.status_code,
+            headers=security_headers(),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception):
+        """Never show a stack trace, never lose the page, always log a reference."""
+        reference = secrets.token_hex(6)
+        print(
+            f"[forgecore] unhandled {reference}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc()
+        try:
+            console.audit.record(
+                "app.error",
+                reference=reference,
+                kind=type(exc).__name__,
+                path=request.url.path,
+            )
+        except OSError:  # pragma: no cover - the audit log itself is failing
+            pass
+        return page(
+            request,
+            "error.html",
+            status_code=500,
+            error=(
+                f"Something went wrong (reference {reference}). Your stored data was "
+                "not modified. Retry the action; quote the reference if it persists."
+            ),
         )
 
     return app
