@@ -319,7 +319,13 @@ def restore_backup(home: Home, data: bytes) -> dict[str, Any]:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
-    vault_entries = sum(1 for name in blobs if name.startswith("vault/"))
+    # Key material lives in vault/ too, but it is not a user entry.
+    key_members = {f"vault/{name}" for name in VAULT_KEY_FILES}
+    vault_entries = sum(
+        1
+        for name in blobs
+        if name.startswith("vault/") and name not in key_members
+    )
     uploads = sum(1 for name in blobs if name.startswith("uploads/"))
     return {
         "files": len(blobs),
