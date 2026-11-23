@@ -28,7 +28,7 @@
   </div>
   <div class="card stat">
     <span class="label">Collected records</span>
-    <span class="value">{{ data.dataset.items }}</span>
+    <span class="value">{{ data.dataset['items'] }}</span>
     <span class="hint">{{ data.dataset.jobs }} job(s), {{ data.dataset.runs }} run(s)</span>
   </div>
 </div>
@@ -43,7 +43,7 @@
   <h2>Collection</h2>
   <dl class="facts">
     <dt>Jobs</dt><dd>{{ data.dataset.jobs }} ({{ data.dataset.enabled_jobs }} scheduled)</dd>
-    <dt>Records stored</dt><dd>{{ data.dataset.items }}</dd>
+    <dt>Records stored</dt><dd>{{ data.dataset['items'] }}</dd>
     <dt>Runs</dt><dd>{{ data.dataset.runs }}</dd>
     <dt>Last run</dt>
     <dd>{% if data.dataset.last_run_at %}{{ data.dataset.last_run_at }}{% else %}never{% endif %}</dd>

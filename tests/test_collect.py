@@ -383,6 +383,15 @@ def test_uploaded_file_can_be_imported_to_records(client: TestClient) -> None:
     assert "uploaded row" in client.get(imported.headers["location"]).text
 
 
+def test_dashboard_renders_dataset_counts(client: TestClient) -> None:
+    """``dataset.items`` must render the count, not dict.items' repr."""
+    _login(client)
+    body = client.get("/").text
+    assert "built-in method" not in body
+    assert "Records stored" in body
+    assert "0 job(s)" in body
+
+
 def test_delete_job_via_web(client: TestClient, server: str) -> None:
     _login(client)
     token = _csrf(client)
