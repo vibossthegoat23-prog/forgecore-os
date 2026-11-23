@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Results &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Collected Records</h1>
+<p class="muted">Everything your jobs and imports have stored. Search across
+  titles and bodies, narrow to one job, then export the same selection.</p>
+
+<section class="card">
+  <h2>Search</h2>
+  <form method="get" action="/results">
+    <label for="results-q">Search text</label>
+    <input id="results-q" name="q" value="{{ query }}" maxlength="200"
+           placeholder="keyword in title or body">
+    <label for="results-job">Job</label>
+    <select id="results-job" name="job">
+      <option value="">All jobs</option>
+      {% for job in jobs %}
+      <option value="{{ job.id }}" {% if selected_job == job.id %}selected{% endif %}>
+        {{ job.name }} ({{ job.item_count }})
+      </option>
+      {% endfor %}
+    </select>
+    <button type="submit">Search</button>
+  </form>
+  <p class="small">
+    <a href="/results/export.csv?{{ qs }}">Export CSV</a> &middot;
+    <a href="/results/export.json?{{ qs }}">Export JSON</a>
+    {% if query or selected_job %}&middot; <a href="/results">Clear filters</a>{% endif %}
+  </p>
+</section>
+
+<section class="card">
+  <h2>{{ total }} record(s)</h2>
+  {% if records %}
+  <table>
+    <thead><tr><th>Title</th><th>Job</th><th>Collected</th></tr></thead>
+    <tbody>
+      {% for record in records %}
+      <tr>
+        <td><a href="/results/{{ record.id }}">{{ record.title or "(no title)" }}</a></td>
+        <td class="small">{{ record.job_name }}</td>
+        <td class="small">{{ record.collected_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="pager">
+    <span class="muted small">Showing {{ start }}&ndash;{{ end }} of {{ total }}</span>
+    {% if page_no > 1 %}
+    <a class="button" href="/results?{{ qs }}&page={{ page_no - 1 }}">Newer</a>
+    {% endif %}
+    <span class="mono small">{{ page_no }} / {{ pages }}</span>
+    {% if page_no < pages %}
+    <a class="button" href="/results?{{ qs }}&page={{ page_no + 1 }}">Older</a>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="muted">
+    {% if query or selected_job %}No record matches that filter.
+    {% else %}Nothing collected yet. Create a job on <a href="/jobs">Jobs</a>
+    or import a file below.{% endif %}
+  </p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Import a file</h2>
+  <p class="muted">CSV and JSON files become searchable records; anything else is
+    imported line by line as text.</p>
+  <form method="post" action="/results/import" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="import-file">File</label>
+    <input id="import-file" name="file" type="file" required>
+    <button type="submit">Import</button>
+  </form>
+</section>
+{% endblock %}

@@ -24,11 +24,15 @@ Security posture
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import os
 import secrets
 import sys
 import traceback
 from pathlib import Path
+from urllib.parse import quote
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Form, Request, Response, UploadFile
@@ -50,6 +54,17 @@ from forgecore.backup import (
     restore_backup,
 )
 from forgecore.agents import ONLINE_WINDOW_SECONDS, AgentError, AgentRegistry
+from forgecore.collect import (
+    KINDS as COLLECT_KINDS,
+)
+from forgecore.collect import (
+    CollectError,
+    Scheduler,
+    Store,
+    ingest_upload,
+    run_job,
+    scheduler_enabled,
+)
 from forgecore.config import (
     ENV_CONSOLE_PASSWORD,
     ENV_KDF_ITERATIONS,
@@ -168,6 +183,11 @@ class Console:
         # Recreate state before anything reads it: on a host without a
         # persistent disk this process may have started on an empty volume.
         self._restore_from_replica()
+        # Collected records live in data/, which backup and the replica carry.
+        self.dataset = Store(self.home.dataset_db)
+        self.scheduler = Scheduler(self.dataset)
+        if scheduler_enabled():
+            self.scheduler.start()
         self.audit.on_record = self._on_audit_event
         self._auto_unlock()
         self.audit.record("console.start", version=__version__)
@@ -1250,6 +1270,314 @@ def create_app(home: Home | None = None) -> FastAPI:
             ),
             **context,
         )
+
+    # -- collection jobs -------------------------------------------------
+    def _jobs_page(
+        request: Request, session: Session, **extra: Any
+    ) -> HTMLResponse:
+        """Render the jobs view with every context key its template needs."""
+        return page(
+            request,
+            "jobs.html",
+            session=session,
+            jobs=console.dataset.list_jobs(),
+            runs=console.dataset.recent_runs(8),
+            kinds=COLLECT_KINDS,
+            scheduler_on=scheduler_enabled(),
+            stats=console.dataset.stats(),
+            **extra,
+        )
+
+    @app.get("/jobs", response_class=HTMLResponse)
+    async def jobs_view(request: Request, session: Session = Depends(require_session)):
+        extra: dict[str, Any] = {}
+        ran = request.query_params.get("ran", "")
+        if ran.isdigit():
+            try:
+                job = console.dataset.get_job(int(ran))
+            except CollectError:
+                job = None
+            if job is not None:
+                if job.get("last_status") == "ok":
+                    extra["notice"] = (
+                        f"{job['name']} ran and stored {job.get('item_count', 0)} "
+                        "record(s) in total."
+                    )
+                elif job.get("last_status"):
+                    extra["error"] = (
+                        f"{job['name']} failed: "
+                        f"{job.get('last_error') or 'unknown error'}"
+                    )
+        return _jobs_page(request, session, **extra)
+
+    @app.post("/jobs", response_class=HTMLResponse)
+    async def jobs_create(
+        request: Request,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+        name: Annotated[str, Form()] = "",
+        kind: Annotated[str, Form()] = "links",
+        url: Annotated[str, Form()] = "",
+        pattern: Annotated[str, Form()] = "",
+        path: Annotated[str, Form()] = "",
+        title_field: Annotated[str, Form()] = "title",
+        schedule_minutes: Annotated[str, Form()] = "0",
+    ):
+        if not console.csrf_ok(session, csrf_token):
+            return page(
+                request,
+                "error.html",
+                session=session,
+                status_code=400,
+                error="Invalid form token. Reload the page and try again.",
+            )
+        try:
+            minutes = int(schedule_minutes or 0)
+        except (TypeError, ValueError):
+            return _jobs_page(
+                request,
+                session,
+                status_code=400,
+                error="Schedule must be a whole number of minutes (0 for manual).",
+            )
+        try:
+            job = console.dataset.add_job(
+                name,
+                kind,
+                url,
+                pattern=pattern,
+                path=path,
+                title_field=title_field or "title",
+                schedule_minutes=minutes,
+            )
+        except CollectError as exc:
+            return _jobs_page(request, session, status_code=400, error=str(exc))
+        console.audit.record("collect.job_created", job=job["name"], kind=job["kind"])
+        console.mark_dirty()
+        return redirect("/jobs", session=session)
+
+    @app.post("/jobs/{job_id}/run", response_class=HTMLResponse)
+    async def jobs_run(
+        request: Request,
+        job_id: int,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+    ):
+        if not console.csrf_ok(session, csrf_token):
+            return page(
+                request,
+                "error.html",
+                session=session,
+                status_code=400,
+                error="Invalid form token. Reload the page and try again.",
+            )
+        try:
+            outcome = run_job(console.dataset, job_id)
+        except CollectError as exc:
+            return _jobs_page(request, session, status_code=400, error=str(exc))
+        console.audit.record(
+            "collect.run",
+            job=job_id,
+            status=outcome["status"],
+            added=outcome["added"],
+        )
+        console.mark_dirty()
+        return redirect(f"/jobs?ran={int(job_id)}", session=session)
+
+    @app.post("/jobs/{job_id}/toggle", response_class=HTMLResponse)
+    async def jobs_toggle(
+        request: Request,
+        job_id: int,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+    ):
+        if not console.csrf_ok(session, csrf_token):
+            return page(
+                request,
+                "error.html",
+                session=session,
+                status_code=400,
+                error="Invalid form token. Reload the page and try again.",
+            )
+        try:
+            job = console.dataset.get_job(job_id)
+            console.dataset.set_enabled(job_id, not job["enabled"])
+        except CollectError as exc:
+            return _jobs_page(request, session, status_code=400, error=str(exc))
+        console.audit.record(
+            "collect.job_toggled", job=job_id, enabled=not job["enabled"]
+        )
+        console.mark_dirty()
+        return redirect("/jobs", session=session)
+
+    @app.post("/jobs/{job_id}/delete", response_class=HTMLResponse)
+    async def jobs_delete(
+        request: Request,
+        job_id: int,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+    ):
+        if not console.csrf_ok(session, csrf_token):
+            return page(
+                request,
+                "error.html",
+                session=session,
+                status_code=400,
+                error="Invalid form token. Reload the page and try again.",
+            )
+        try:
+            job = console.dataset.get_job(job_id)
+        except CollectError as exc:
+            return _jobs_page(request, session, status_code=400, error=str(exc))
+        console.dataset.delete_job(job_id)
+        console.audit.record("collect.job_deleted", job=job["name"])
+        console.mark_dirty()
+        return redirect("/jobs", session=session)
+
+    # -- collected records ------------------------------------------------
+    def _result_filters(request: Request) -> tuple[int | None, str]:
+        query = request.query_params.get("q", "").strip()[:200]
+        raw_job = request.query_params.get("job", "").strip()
+        job_id = int(raw_job) if raw_job.isdigit() else None
+        return job_id, query
+
+    def _results_page(
+        request: Request, session: Session, **extra: Any
+    ) -> HTMLResponse:
+        job_id, query = _result_filters(request)
+        found = console.dataset.search(
+            job_id=job_id,
+            query=query,
+            page=page_number(request),
+            size=25,
+        )
+        total = int(found["total"])
+        start = (found["page"] - 1) * found["size"] + 1 if total else 0
+        end = min(total, found["page"] * found["size"])
+        return page(
+            request,
+            "results.html",
+            session=session,
+            records=found["items"],
+            total=total,
+            page_no=found["page"],
+            pages=found["pages"],
+            start=start,
+            end=end,
+            query=query,
+            selected_job=job_id,
+            jobs=console.dataset.list_jobs(),
+            qs=f"q={quote(query)}&job={job_id or ''}",
+            **extra,
+        )
+
+    @app.get("/results", response_class=HTMLResponse)
+    async def results_view(request: Request, session: Session = Depends(require_session)):
+        return _results_page(request, session)
+
+    @app.get("/results/export.csv")
+    async def results_export_csv(
+        request: Request, session: Session = Depends(require_session)
+    ):
+        job_id, query = _result_filters(request)
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["id", "job", "title", "url", "collected_at", "body"])
+        for record in console.dataset.iter_records(job_id=job_id, query=query):
+            writer.writerow(
+                [
+                    record["id"],
+                    record["job_name"],
+                    record["title"],
+                    record["url"],
+                    record["collected_at"],
+                    record["body"],
+                ]
+            )
+        return RawResponse(
+            content=buffer.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="forgecore-results.csv"'
+            },
+        )
+
+    @app.get("/results/export.json")
+    async def results_export_json(
+        request: Request, session: Session = Depends(require_session)
+    ):
+        job_id, query = _result_filters(request)
+        records = list(console.dataset.iter_records(job_id=job_id, query=query))
+        return RawResponse(
+            content=json.dumps(records, ensure_ascii=False, indent=2),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": 'attachment; filename="forgecore-results.json"'
+            },
+        )
+
+    @app.post("/results/import", response_class=HTMLResponse)
+    async def results_import(
+        request: Request,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+        file: UploadFile | None = None,
+    ):
+        if not console.csrf_ok(session, csrf_token):
+            return page(
+                request,
+                "error.html",
+                session=session,
+                status_code=400,
+                error="Invalid form token. Reload the page and try again.",
+            )
+        if file is None or not file.filename:
+            return _results_page(
+                request,
+                session,
+                status_code=400,
+                error="Choose a CSV, JSON or text file to import.",
+            )
+        payload = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(payload) > MAX_UPLOAD_BYTES:
+            return _results_page(
+                request,
+                session,
+                status_code=400,
+                error=(
+                    "File exceeds the "
+                    f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MiB limit."
+                ),
+            )
+        try:
+            summary = ingest_upload(
+                console.dataset, sanitize_name(file.filename), payload
+            )
+        except CollectError as exc:
+            return _results_page(request, session, status_code=400, error=str(exc))
+        console.audit.record(
+            "collect.import", job=summary["job_name"], added=summary["added"]
+        )
+        console.mark_dirty()
+        return redirect(f"/results?job={summary['job_id']}", session=session)
+
+    @app.get("/results/{item_id}", response_class=HTMLResponse)
+    async def result_view(
+        request: Request,
+        item_id: int,
+        session: Session = Depends(require_session),
+    ):
+        try:
+            record = console.dataset.get_item(item_id)
+        except CollectError:
+            return page(
+                request,
+                "error.html",
+                session=session,
+                status_code=404,
+                error="That record does not exist.",
+            )
+        return page(request, "result.html", session=session, record=record)
 
     # -- failure handling ------------------------------------------------
     @app.exception_handler(StarletteHTTPException)

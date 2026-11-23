@@ -19,3 +19,9 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Home:
     monkeypatch.setenv("FORGECORE_HOME", str(root))
     monkeypatch.delenv("FORGECORE_VAULT_PASSWORD", raising=False)
     return Home(root=root)
+
+# The background scheduler is exercised explicitly by its own tests; keep every
+# other test free of a live thread.
+import os as _os
+
+_os.environ.setdefault("FORGECORE_SCHEDULER", "0")

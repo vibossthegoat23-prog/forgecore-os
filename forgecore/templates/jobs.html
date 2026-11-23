@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Collection Jobs &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Collection Jobs</h1>
+<p class="muted">A job fetches a source and stores what it finds, so the records
+  survive restarts and can be searched, filtered and exported. Scheduled jobs run
+  automatically; every fetch job can also be run on demand.</p>
+
+<section class="card">
+  <h2>New job</h2>
+  <form method="post" action="/jobs">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="job-name">Name</label>
+    <input id="job-name" name="name" required maxlength="64"
+           placeholder="news-headlines">
+    <label for="job-kind">What to collect</label>
+    <select id="job-kind" name="kind">
+      <option value="links">Links found on a page</option>
+      <option value="text">Page title, description and text</option>
+      <option value="json">Records from a JSON API</option>
+      <option value="import">Imported file only (use Results to upload)</option>
+    </select>
+    <label for="job-url">Source URL (http or https)</label>
+    <input id="job-url" name="url" type="url" placeholder="https://example.com/news">
+    <label for="job-pattern">Only links matching (optional, regex)</label>
+    <input id="job-pattern" name="pattern" maxlength="200" placeholder="/news/">
+    <label for="job-path">JSON path to the records (optional)</label>
+    <input id="job-path" name="path" maxlength="200" placeholder="data.items">
+    <label for="job-schedule">Run every N minutes (0 = manual only)</label>
+    <input id="job-schedule" name="schedule_minutes" type="number"
+           min="0" max="10080" value="0">
+    <button type="submit">Create job</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Your jobs ({{ stats.jobs }})</h2>
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Kind</th><th>Source</th><th>Records</th>
+        <th>Schedule</th><th>Last run</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td><a href="/results?job={{ job.id }}">{{ job.name }}</a></td>
+        <td class="mono small">{{ job.kind }}</td>
+        <td class="mono small">{{ job.url }}</td>
+        <td>{{ job.item_count }}</td>
+        <td class="small">
+          {% if job.schedule_minutes %}{{ job.schedule_minutes }} min
+            {% if job.enabled %}&middot; on{% else %}&middot; paused{% endif %}
+          {% else %}manual{% endif %}
+        </td>
+        <td class="small">
+          {% if job.last_run_at %}
+            {{ job.last_run_at }}
+            {% if job.last_status == "error" %}
+            <br><span class="error">{{ job.last_error }}</span>
+            {% endif %}
+          {% else %}<span class="muted">never</span>{% endif %}
+        </td>
+        <td>
+          {% if job.kind != "import" %}
+          <form method="post" action="/jobs/{{ job.id }}/run" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="link">Run now</button>
+          </form>
+          {% endif %}
+          {% if job.schedule_minutes %}
+          <form method="post" action="/jobs/{{ job.id }}/toggle" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="link">
+              {% if job.enabled %}Pause{% else %}Resume{% endif %}
+            </button>
+          </form>
+          {% endif %}
+          <form method="post" action="/jobs/{{ job.id }}/delete" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="link">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No jobs yet. Create one above, or import a CSV/JSON file from
+    <a href="/results">Results</a>.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recent runs</h2>
+  {% if runs %}
+  <table>
+    <thead>
+      <tr><th>Job</th><th>Status</th><th>Found</th><th>New</th>
+        <th>Started</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td>{{ run.job_name or "deleted job" }}</td>
+        <td class="mono small">{{ run.status }}</td>
+        <td>{{ run.found }}</td>
+        <td>{{ run.added }}</td>
+        <td class="small">{{ run.started_at }}</td>
+        <td class="small">{{ run.error }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No runs yet.</p>
+  {% endif %}
+  <p class="small muted">
+    Scheduler:
+    {% if scheduler_on %}running in the background, checking every 30 seconds
+    {% else %}disabled by configuration{% endif %}.
+    {{ stats.items }} record(s) stored across {{ stats.jobs }} job(s).
+  </p>
+</section>
+{% endblock %}

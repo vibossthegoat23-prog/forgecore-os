@@ -10,6 +10,7 @@ from typing import Any
 from forgecore import APP_NAME, __version__
 from forgecore import uploads as uploads_module
 from forgecore.agents import AgentError, AgentRegistry
+from forgecore.collect import CollectError, Store
 from forgecore.config import Home
 from forgecore.vault import ALGORITHM, AVAILABLE as VAULT_AVAILABLE, Vault
 
@@ -37,6 +38,13 @@ def snapshot(home: Home) -> dict[str, Any]:
 
     upload_count, upload_bytes = uploads_module.stats(home.uploads_dir)
 
+    dataset = {"jobs": 0, "enabled_jobs": 0, "items": 0, "runs": 0, "last_run_at": None}
+    if home.dataset_db.exists():
+        try:
+            dataset = Store(home.dataset_db).stats()
+        except (CollectError, OSError):
+            pass
+
     try:
         disk_free = shutil.disk_usage(home.root).free
     except OSError:
@@ -59,5 +67,6 @@ def snapshot(home: Home) -> dict[str, Any]:
         "agents_total": len(agents),
         "agents_online": sum(1 for agent in agents if agent["status"] == "online"),
         "agents": agents,
+        "dataset": dataset,
         "disk_free_bytes": disk_free,
     }

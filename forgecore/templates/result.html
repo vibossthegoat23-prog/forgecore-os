@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ record.title or "Record" }} &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>{{ record.title or "(no title)" }}</h1>
+<p class="small muted">
+  Collected by <a href="/results?job={{ record.job_id }}">{{ record.job_name }}</a>
+  at {{ record.collected_at }}
+  {% if record.url %}&middot;
+  <a href="{{ record.url }}" rel="noopener noreferrer nofollow" target="_blank">
+    open source</a>{% endif %}
+</p>
+
+<section class="card">
+  <h2>Stored content</h2>
+  <pre class="body">{{ record.body }}</pre>
+</section>
+
+<p><a href="/results">&larr; Back to results</a></p>
+{% endblock %}
