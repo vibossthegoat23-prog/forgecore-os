@@ -226,9 +226,20 @@ class Console:
         try:
             summary = self.replica.pull_once()
         except ReplicaNotFound:
+            self.replica_restore_note = {
+                "ok": False,
+                "message": (
+                    "No replica was stored yet, so this empty installation started "
+                    "fresh. The first change will create the off-host copy."
+                ),
+            }
             self.audit.record("replica.empty", endpoint=config.host)
             return
         except ReplicaError as exc:
+            self.replica_restore_note = {
+                "ok": False,
+                "message": f"Could not restore from the replica: {exc}",
+            }
             self.audit.record("replica.restore_failed", reason=str(exc))
             return
         # The restore replaced the files behind these objects.
@@ -239,6 +250,14 @@ class Console:
             if self.password
             else load_console_hash(self.home.console_hash_file)
         )
+        self.replica_restore_note = {
+            "ok": True,
+            "message": (
+                f"Restored {summary.get('files', 0)} file(s) and "
+                f"{summary.get('uploads', 0)} upload(s) from the off-host replica "
+                f"after this host started empty."
+            ),
+        }
         self.audit.record(
             "replica.restored",
             files=summary.get("files"),
