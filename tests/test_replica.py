@@ -77,7 +77,9 @@ def replica_server():
         def log_message(self, *args: Any) -> None:
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    # Bind all interfaces so deployment preflight does not mistake this test
+    # stub for the application server; the URL below still uses loopback.
+    server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield store, f"http://127.0.0.1:{server.server_port}/state"
