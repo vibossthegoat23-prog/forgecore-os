@@ -59,6 +59,7 @@ from forgecore.config import (
     kdf_iterations,
 )
 from forgecore.dashboard import snapshot
+from forgecore.replica import ReplicaError, ReplicaNotFound, ReplicaSyncer
 from forgecore.console import human_bytes, human_duration
 from forgecore.security import (
     CSRF_FIELD,
@@ -162,6 +163,12 @@ class Console:
             lockout=LOGIN_LOCKOUT_SECONDS,
         )
         self.iterations = kdf_iterations(DEFAULT_ITERATIONS)
+        self.replica = ReplicaSyncer(self.home)
+        self.replica_restore_note: dict[str, Any] | None = None
+        # Recreate state before anything reads it: on a host without a
+        # persistent disk this process may have started on an empty volume.
+        self._restore_from_replica()
+        self.audit.on_record = self._on_audit_event
         self._auto_unlock()
         self.audit.record("console.start", version=__version__)
 
@@ -179,6 +186,76 @@ class Console:
                 self.audit.record("vault.unlock", actor="startup")
         except VaultError as exc:
             self.audit.record("vault.unlock_failed", actor="startup", reason=str(exc))
+
+    # -- durability -------------------------------------------------------
+    # Events that change stored state, and so are worth replicating off-host.
+    REPLICATED_EVENTS = frozenset(
+        {
+            "vault.init",
+            "vault.entry_created",
+            "vault.entry_deleted",
+            "vault.recovery_created",
+            "vault.recovered",
+            "upload.created",
+            "upload.deleted",
+            "agent.registered",
+            "agent.removed",
+            "backup.restored",
+            "console.password_set",
+        }
+    )
+    # Setup attempts that changed nothing must not trigger an upload.
+    REPLICATE_EXCLUDED = frozenset(
+        {
+            "console.setup_failed",
+            "console.setup_rejected",
+            "console.setup_throttled",
+        }
+    )
+
+    def _restore_from_replica(self) -> None:
+        """Recreate state from the off-host replica when starting empty."""
+        config = self.replica.config
+        if config is None or not config.autorestore:
+            return
+        try:
+            if self.vault.is_initialized():
+                return  # local state wins; never overwrite it at boot
+        except VaultError:  # pragma: no cover - defensive
+            return
+        try:
+            summary = self.replica.pull_once()
+        except ReplicaNotFound:
+            self.audit.record("replica.empty", endpoint=config.host)
+            return
+        except ReplicaError as exc:
+            self.audit.record("replica.restore_failed", reason=str(exc))
+            return
+        # The restore replaced the files behind these objects.
+        self.vault = Vault(self.home.vault_dir)
+        self.agents = AgentRegistry(self.home.agents_file)
+        self.password_hash = (
+            None
+            if self.password
+            else load_console_hash(self.home.console_hash_file)
+        )
+        self.audit.record(
+            "replica.restored",
+            files=summary.get("files"),
+            uploads=summary.get("uploads"),
+            endpoint=config.host,
+        )
+
+    def _on_audit_event(self, event: str) -> None:
+        """Queue a replica push when an event changed stored state."""
+        if event in self.REPLICATE_EXCLUDED:
+            return
+        if event in self.REPLICATED_EVENTS or event.startswith("console.setup"):
+            self.replica.mark_dirty()
+
+    def mark_dirty(self) -> None:
+        """Queue a replica push after a state change made outside the audit log."""
+        self.replica.mark_dirty()
 
     # -- console password -------------------------------------------------
     @property
@@ -265,6 +342,14 @@ def create_app(home: Home | None = None) -> FastAPI:
             response.headers.setdefault(name, value)
         return response
 
+    def _safe_next(value: str, default: str = "/vault") -> str:
+        """Only accept a same-origin absolute path as a redirect target."""
+        if not value or not value.startswith("/") or value.startswith("//"):
+            return default
+        if "\r" in value or "\n" in value:
+            return default
+        return value
+
     # -- rendering -------------------------------------------------------
     def page(
         request: Request,
@@ -282,6 +367,11 @@ def create_app(home: Home | None = None) -> FastAPI:
             "notice": None,
             "error": None,
             "storage_persistent": console.home.storage_is_persistent(),
+            "vault_locked": not console.vault.unlocked,
+            "replica": console.replica.status(),
+            "replica_restore_note": console.replica_restore_note,
+            "inline_unlock": True,
+            "current_path": request.url.path,
         }
         base.update(context)
         return templates.TemplateResponse(
@@ -764,7 +854,58 @@ def create_app(home: Home | None = None) -> FastAPI:
             locked=not console.vault.unlocked,
             initialized=console.vault.is_initialized(),
             recovery=console.vault.has_recovery(),
+            inline_unlock=False,
         )
+
+    @app.post("/backup/replica/push", response_class=HTMLResponse)
+    async def backup_replica_push(
+        request: Request,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+    ):
+        if not console.csrf_ok(session, csrf_token):
+            return RedirectResponse("/backup", status_code=303)
+        actor = _client_key(request)
+        try:
+            result = console.replica.push_once()
+            console.audit.record("replica.pushed", actor=actor, bytes=result["bytes"])
+        except ReplicaError as exc:
+            console.audit.record("replica.push_failed", actor=actor, reason=str(exc))
+        return redirect("/backup")
+
+    @app.post("/backup/replica/restore", response_class=HTMLResponse)
+    async def backup_replica_restore(
+        request: Request,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+    ):
+        if not console.csrf_ok(session, csrf_token):
+            return RedirectResponse("/backup", status_code=303)
+        actor = _client_key(request)
+        try:
+            summary = console.replica.pull_once()
+        except ReplicaError as exc:
+            console.replica_restore_note = {"ok": False, "message": str(exc)}
+            console.audit.record("replica.restore_failed", actor=actor, reason=str(exc))
+            return redirect("/backup")
+        # The restored key material is not the material that was in memory.
+        console.vault = Vault(console.home.vault_dir)
+        console.agents = AgentRegistry(console.home.agents_file)
+        console.password_hash = (
+            None
+            if console.password
+            else load_console_hash(console.home.console_hash_file)
+        )
+        console.replica_restore_note = {
+            "ok": True,
+            "message": (
+                f"Restored {summary['files']} files: "
+                f"{summary['vault_entries']} vault entries and "
+                f"{summary['uploads']} uploads."
+            ),
+        }
+        console.audit.record("replica.restored", actor=actor, files=summary["files"])
+        return redirect("/backup")
 
     @app.post("/vault/unlock", response_class=HTMLResponse)
     async def vault_unlock(
@@ -772,9 +913,11 @@ def create_app(home: Home | None = None) -> FastAPI:
         session: Session = Depends(require_session),
         csrf_token: Annotated[str, Form()] = "",
         password: Annotated[str, Form()] = "",
+        next: Annotated[str, Form()] = "",
     ):
+        target = _safe_next(next)
         if not console.csrf_ok(session, csrf_token):
-            return RedirectResponse("/vault", status_code=303)
+            return RedirectResponse(target, status_code=303)
         key = _client_key(request)
         try:
             console.login_limiter.check(f"vault:{key}")
@@ -798,7 +941,7 @@ def create_app(home: Home | None = None) -> FastAPI:
                         entries=[], locked=True,
                         initialized=console.vault.is_initialized(),
                         recovery=console.vault.has_recovery(), error=str(exc))
-        return redirect("/vault")
+        return redirect(target)
 
     @app.post("/vault/lock", response_class=HTMLResponse)
     async def vault_lock(
