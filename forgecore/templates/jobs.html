@@ -121,7 +121,7 @@
     Scheduler:
     {% if scheduler_on %}running in the background, checking every 30 seconds
     {% else %}disabled by configuration{% endif %}.
-    {{ stats.items }} record(s) stored across {{ stats.jobs }} job(s).
+    {{ stats['items'] }} record(s) stored across {{ stats.jobs }} job(s).
   </p>
 </section>
 {% endblock %}
