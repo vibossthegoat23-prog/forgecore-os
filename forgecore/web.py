@@ -44,6 +44,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from forgecore import APP_NAME, __version__
@@ -892,7 +893,9 @@ def create_app(home: Home | None = None) -> FastAPI:
                         error="Invalid form token. Reload the page and try again.")
         try:
             payload = open_upload(console.home.uploads_dir, name)
-            summary = ingest_upload(console.dataset, name, payload)
+            summary = await run_in_threadpool(
+                ingest_upload, console.dataset, name, payload
+            )
         except (UploadError, CollectError) as exc:
             listing = paginate(
                 list_uploads(console.home.uploads_dir),
@@ -1413,7 +1416,7 @@ def create_app(home: Home | None = None) -> FastAPI:
                 error="Invalid form token. Reload the page and try again.",
             )
         try:
-            outcome = run_job(console.dataset, job_id)
+            outcome = await run_in_threadpool(run_job, console.dataset, job_id)
         except CollectError as exc:
             return _jobs_page(request, session, status_code=400, error=str(exc))
         console.audit.record(
@@ -1591,8 +1594,8 @@ def create_app(home: Home | None = None) -> FastAPI:
                 ),
             )
         try:
-            summary = ingest_upload(
-                console.dataset, sanitize_name(file.filename), payload
+            summary = await run_in_threadpool(
+                ingest_upload, console.dataset, sanitize_name(file.filename), payload
             )
         except CollectError as exc:
             return _results_page(request, session, status_code=400, error=str(exc))

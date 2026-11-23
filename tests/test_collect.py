@@ -383,6 +383,14 @@ def test_uploaded_file_can_be_imported_to_records(client: TestClient) -> None:
     assert "uploaded row" in client.get(imported.headers["location"]).text
 
 
+def test_jobs_page_renders_dataset_stats(client: TestClient) -> None:
+    """``stats.items`` must render the count, not dict.items' repr."""
+    _login(client)
+    body = client.get("/jobs").text
+    assert "built-in method" not in body
+    assert "record(s) stored across" in body
+
+
 def test_dashboard_renders_dataset_counts(client: TestClient) -> None:
     """``dataset.items`` must render the count, not dict.items' repr."""
     _login(client)
