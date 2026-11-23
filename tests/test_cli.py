@@ -49,7 +49,7 @@ def test_upload_then_list(home: Home, tmp_path: Path, capsys: pytest.CaptureFixt
 def test_vault_roundtrip_through_cli(
     home: Home, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "pw")
+    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "cli-password-1")
     source = tmp_path / "secret.txt"
     source.write_text("classified")
 
@@ -60,7 +60,7 @@ def test_vault_roundtrip_through_cli(
 
 
 def test_vault_list_and_rm(home: Home, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "pw")
+    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "cli-password-1")
     source = tmp_path / "s.txt"
     source.write_text("x")
     main(["vault", "put", "entry", "--file", str(source)])
@@ -75,12 +75,12 @@ def test_vault_wrong_password_fails(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "right")
+    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "right-password-1")
     source = tmp_path / "s.txt"
     source.write_text("x")
     assert main(["vault", "put", "s", "--file", str(source)]) == 0
 
-    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "wrong")
+    monkeypatch.setenv("FORGECORE_VAULT_PASSWORD", "wrong-password-1")
     capsys.readouterr()
     assert main(["vault", "get", "s"]) == 1
     assert "error:" in capsys.readouterr().err
