@@ -335,6 +335,8 @@ class AuditLog:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
+        # Optional listener so state changes can be replicated off-host.
+        self.on_record = None
 
     def _rotate_if_needed(self) -> None:
         try:
@@ -353,6 +355,12 @@ class AuditLog:
     def record(self, event: str, *, actor: str = "system", **detail) -> None:
         """Append one event. Callers must not pass secrets in ``detail``."""
         entry = {"ts": utcnow_iso(), "event": event, "actor": actor, "detail": detail}
+        hook = self.on_record
+        if hook is not None:
+            try:
+                hook(event)
+            except Exception:  # pragma: no cover - a listener must not break audit
+                pass
         line = json.dumps(entry, sort_keys=True, ensure_ascii=True) + "\n"
         with self._lock:
             try:

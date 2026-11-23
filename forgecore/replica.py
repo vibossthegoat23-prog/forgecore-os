@@ -323,6 +323,13 @@ class ReplicaSyncer:
             self._record(ok=True, error=None, size=result["bytes"])
             return result
 
+    def pull_once(self) -> dict[str, Any]:
+        """Fetch the remote copy and replace local state with it."""
+        if self.config is None:
+            raise ReplicaError("no replica endpoint is configured")
+        with self._push_lock:
+            return pull(self.home, self.config)
+
     def mark_dirty(self) -> bool:
         """Queue a push. Returns ``True`` when replication is enabled."""
         if self.config is None:
