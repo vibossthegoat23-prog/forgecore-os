@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -76,14 +77,31 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _local_address() -> str:
+    """An address this host is reachable on.
+
+    Never a loopback literal: a server bound to loopback is unreachable from a
+    container's proxy, so the fixture binds 0.0.0.0 and connects here instead.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))  # TEST-NET-1; no packets are sent
+            return probe.getsockname()[0]
+    except OSError:  # pragma: no cover - fallback for unusual sandboxes
+        return socket.gethostbyname(socket.gethostname())
+
+
+LOCAL_ADDRESS = _local_address()
+
+
 @pytest.fixture()
 def server(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv(collect.ENV_ALLOW_PRIVATE, "1")
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    httpd = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{httpd.server_port}"
+        yield f"http://{LOCAL_ADDRESS}:{httpd.server_port}"
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -98,12 +116,12 @@ def store(tmp_path: Path) -> Store:
 def test_private_address_is_refused_without_opt_in(monkeypatch) -> None:
     monkeypatch.delenv(collect.ENV_ALLOW_PRIVATE, raising=False)
     with pytest.raises(CollectError):
-        check_url("http://127.0.0.1:8000/x")
+        check_url(f"http://{LOCAL_ADDRESS}:8000/x")
 
 
 def test_private_address_allowed_with_opt_in(monkeypatch) -> None:
     monkeypatch.setenv(collect.ENV_ALLOW_PRIVATE, "1")
-    assert check_url("http://127.0.0.1:8000/x")
+    assert check_url(f"http://{LOCAL_ADDRESS}:8000/x")
 
 
 def test_bad_scheme_is_refused() -> None:
