@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from forgecore import web as web_module
 from forgecore.config import Home
 from forgecore.replica import (
     MAGIC,
@@ -203,6 +203,10 @@ def test_syncer_pushes_after_a_change(
     assert syncer.configured is True
     syncer.mark_dirty()
     assert syncer.flush(timeout=10.0) is True
+    # flush() waits for the worker to wake, not for the upload to finish.
+    deadline = time.monotonic() + 10.0
+    while store.puts == 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert store.puts >= 1
     assert syncer.status()["last_ok"] is True
 
@@ -245,14 +249,14 @@ def test_state_survives_a_redeploy(
             ).status_code
             == 303
         )
-        web_module.console.replica.push_once()
+        app.state.console.replica.push_once()
 
     assert store.blob is not None
 
     # A redeploy: a brand new, empty volume and the same replica endpoint.
     second = Home(tmp_path / "second").ensure()
     restored_app = create_app(second)
-    console = web_module.console
+    console = restored_app.state.console
     assert console.replica_restore_note is not None
     assert console.replica_restore_note["ok"] is True
     assert console.vault.is_initialized() is True
@@ -285,22 +289,22 @@ def test_claimed_console_password_survives_a_redeploy(
 
     app = create_app(home)
     with TestClient(app, follow_redirects=False) as client:
-        token = _csrf(client, "/setup")
+        # First-run setup has no session yet, so the form carries no CSRF token.
         assert (
             client.post(
                 "/setup",
-                data={"csrf_token": token, "password": CONSOLE_PASSWORD, "confirm": CONSOLE_PASSWORD},
+                data={"password": CONSOLE_PASSWORD, "confirm": CONSOLE_PASSWORD},
             ).status_code
             == 303
         )
-        assert web_module.console.needs_setup is False
-        web_module.console.replica.push_once()
+        assert app.state.console.needs_setup is False
+        app.state.console.replica.push_once()
 
     assert store.blob is not None
 
     second = Home(tmp_path / "second").ensure()
     restored_app = create_app(second)
-    console = web_module.console
+    console = restored_app.state.console
     assert console.needs_setup is False
 
     with TestClient(restored_app, follow_redirects=False) as client:
@@ -328,7 +332,7 @@ def test_backup_page_pushes_and_restores(replica_client) -> None:
     token = _csrf(client, "/backup")
     response = client.post("/backup/replica/restore", data={"csrf_token": token})
     assert response.status_code == 303
-    assert web_module.console.replica_restore_note["ok"] is True
+    assert client.app.state.console.replica_restore_note["ok"] is True
 
 
 def test_replica_push_requires_a_csrf_token(replica_client) -> None:
