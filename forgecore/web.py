@@ -280,6 +280,12 @@ def create_app(home: Home | None = None) -> FastAPI:
     async def healthz() -> dict[str, Any]:
         return {"status": "ok", "app": APP_NAME, "version": __version__}
 
+    # The hosting edge answers /healthz itself, so the same liveness answer is
+    # also exposed on /health, which is what the container healthcheck uses.
+    @app.get("/health")
+    async def health() -> dict[str, Any]:
+        return {"status": "ok", "app": APP_NAME, "version": __version__}
+
     @app.get("/login", response_class=HTMLResponse)
     async def login_form(request: Request):
         if console.session_from(request):

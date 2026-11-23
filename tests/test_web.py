@@ -52,6 +52,13 @@ def test_health_endpoint_is_public(client: TestClient) -> None:
     assert body["status"] == "ok"
 
 
+def test_health_alias_is_public(client: TestClient) -> None:
+    """The hosting edge owns /healthz, so /health must answer liveness too."""
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
 def test_login_page_renders(client: TestClient) -> None:
     response = client.get("/login")
     assert response.status_code == 200
