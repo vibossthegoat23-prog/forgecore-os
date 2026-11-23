@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-import time
+import stat
 from pathlib import Path
 
 import pytest
 
+from forgecore import security as security_module
 from forgecore.security import (
     AuditLog,
     RateLimitExceeded,
@@ -27,7 +28,7 @@ def test_constant_time_compare_matches_real_equality() -> None:
 
 
 def test_rate_limiter_blocks_after_the_failure_budget() -> None:
-    limiter = RateLimiter(max_failures=3, window_seconds=60)
+    limiter = RateLimiter(limit=3, window=60)
     for _ in range(3):
         limiter.check("1.2.3.4")
         limiter.register_failure("1.2.3.4")
@@ -37,7 +38,7 @@ def test_rate_limiter_blocks_after_the_failure_budget() -> None:
 
 
 def test_rate_limiter_is_per_key() -> None:
-    limiter = RateLimiter(max_failures=1, window_seconds=60)
+    limiter = RateLimiter(limit=1, window=60)
     limiter.register_failure("a")
     with pytest.raises(RateLimitExceeded):
         limiter.check("a")
@@ -45,7 +46,7 @@ def test_rate_limiter_is_per_key() -> None:
 
 
 def test_successful_login_resets_the_failure_count() -> None:
-    limiter = RateLimiter(max_failures=2, window_seconds=60)
+    limiter = RateLimiter(limit=2, window=60)
     limiter.register_failure("key")
     limiter.reset("key")
     limiter.check("key")
@@ -53,14 +54,38 @@ def test_successful_login_resets_the_failure_count() -> None:
     limiter.check("key")
 
 
+def test_rate_limiter_lockout_survives_the_window() -> None:
+    now = [1000.0]
+    limiter = RateLimiter(limit=1, window=10, lockout=60, clock=lambda: now[0])
+    limiter.register_failure("key")
+    with pytest.raises(RateLimitExceeded):
+        limiter.check("key")
+    now[0] += 11  # window elapsed, lockout still active
+    with pytest.raises(RateLimitExceeded):
+        limiter.check("key")
+    now[0] += 60
+    limiter.check("key")
+
+
 def test_rate_limiter_window_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
     now = [1000.0]
-    limiter = RateLimiter(max_failures=1, window_seconds=10, clock=lambda: now[0])
+    limiter = RateLimiter(limit=1, window=10, clock=lambda: now[0])
     limiter.register_failure("key")
     with pytest.raises(RateLimitExceeded):
         limiter.check("key")
     now[0] += 11
     limiter.check("key")
+
+
+def test_rate_limiter_is_bounded_in_memory() -> None:
+    """An attacker rotating addresses cannot grow the table without limit."""
+    limiter = RateLimiter(limit=5, window=60, max_keys=16)
+    for index in range(40):
+        try:
+            limiter.check(f"client-{index}")
+        except RateLimitExceeded:
+            break
+    assert len(limiter._buckets) <= 16
 
 
 def test_session_lifecycle() -> None:
@@ -78,6 +103,7 @@ def test_sessions_are_unique_and_carry_no_user_data() -> None:
     assert first.sid != second.sid
     assert first.csrf != second.csrf
     assert len(first.sid) >= 32
+    assert first.master_key is None
 
 
 def test_unknown_session_identifier_is_rejected() -> None:
@@ -87,9 +113,21 @@ def test_unknown_session_identifier_is_rejected() -> None:
 
 def test_session_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
     now = [0.0]
-    store = SessionStore(clock=lambda: now[0], ttl_seconds=10)
+    store = SessionStore(clock=lambda: now[0])
     session = store.create()
-    now[0] += 11
+    now[0] += security_module.SESSION_IDLE_SECONDS + 1
+    assert store.get(session.sid) is None
+
+
+def test_session_absolute_expiry() -> None:
+    now = [0.0]
+    store = SessionStore(clock=lambda: now[0])
+    session = store.create()
+    # Keep the session warm so only the absolute limit can expire it.
+    for _ in range(10):
+        now[0] += security_module.SESSION_IDLE_SECONDS - 1
+        assert store.get(session.sid) is not None
+    now[0] += security_module.SESSION_ABSOLUTE_SECONDS
     assert store.get(session.sid) is None
 
 
@@ -108,6 +146,8 @@ def test_audit_log_appends_without_secrets(tmp_path: Path) -> None:
     payload = json.loads(raw.strip().splitlines()[-1])
     assert payload["event"] == "vault.unlock_failed"
     assert payload["actor"] == "1.2.3.4"
+    assert payload["detail"]["reason"] == "wrong password"
+    assert "ts" in payload
 
 
 def test_audit_log_tail_is_limited_and_ordered(tmp_path: Path) -> None:
@@ -116,7 +156,7 @@ def test_audit_log_tail_is_limited_and_ordered(tmp_path: Path) -> None:
         log.record("event", actor="cli", index=index)
     tail = log.tail(2)
     assert len(tail) == 2
-    assert tail[-1]["index"] == 4
+    assert tail[-1]["detail"]["index"] == 4
 
 
 def test_audit_log_tail_on_missing_file_is_empty(tmp_path: Path) -> None:
@@ -124,8 +164,6 @@ def test_audit_log_tail_on_missing_file_is_empty(tmp_path: Path) -> None:
 
 
 def test_audit_log_is_owner_only(tmp_path: Path) -> None:
-    import stat
-
     log = AuditLog(tmp_path / "audit.log")
     log.record("event")
     assert stat.S_IMODE((tmp_path / "audit.log").stat().st_mode) == 0o600
@@ -134,27 +172,24 @@ def test_audit_log_is_owner_only(tmp_path: Path) -> None:
 def test_security_headers_block_script_and_framing() -> None:
     headers = security_headers()
     csp = headers["Content-Security-Policy"]
-    assert "default-src 'self'" in csp
-    assert "script-src 'self'" in csp
-    assert "unsafe-inline" not in csp.split("style-src")[0]
+    # No scripts at all: the UI is server-rendered and JavaScript-free.
+    assert "default-src 'none'" in csp
+    assert "script-src" not in csp
     assert "frame-ancestors 'none'" in csp
+    assert "form-action 'self'" in csp
     assert headers["X-Frame-Options"] == "DENY"
     assert headers["X-Content-Type-Options"] == "nosniff"
+    assert headers["Referrer-Policy"] == "no-referrer"
     assert "no-store" in headers["Cache-Control"]
 
 
-def test_client_key_prefers_the_forwarded_client() -> None:
+def test_client_key_uses_the_proxy_observed_hop() -> None:
+    """A client cannot spoof its limit key by prepending addresses."""
     assert client_key("203.0.113.9", "10.0.0.1") == "203.0.113.9"
-    assert client_key("198.51.100.4, 10.0.0.1", "10.0.0.1") == "198.51.100.4"
+    assert client_key("1.2.3.4, 203.0.113.9", "10.0.0.1") == "203.0.113.9"
     assert client_key(None, "10.0.0.1") == "10.0.0.1"
     assert client_key("", None) == "unknown"
 
 
-def test_rate_limiter_prunes_stale_buckets() -> None:
-    now = [0.0]
-    limiter = RateLimiter(max_failures=1, window_seconds=5, clock=lambda: now[0])
-    for index in range(200):
-        limiter.register_failure(f"client-{index}")
-    now[0] += 100
-    limiter.check("fresh")
-    assert time.monotonic() >= 0
+def test_client_key_is_truncated() -> None:
+    assert len(client_key("x" * 500, None)) <= 64

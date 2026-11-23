@@ -40,8 +40,12 @@ def sanitize_name(raw: str) -> str:
     """Reduce ``raw`` to a single safe file name or raise :class:`UploadError`."""
     if not isinstance(raw, str) or not raw.strip():
         raise UploadError("upload name must not be empty")
+    # A backslash is never a legitimate part of an uploaded file name; treat
+    # it as an attack attempt instead of silently translating it.
+    if "\\" in raw:
+        raise UploadError(f"invalid upload name {raw!r}: backslash is not allowed")
     # Strip any directory component first, then validate what is left.
-    name = raw.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    name = raw.rsplit("/", 1)[-1].strip()
     if name in {"", ".", ".."}:
         raise UploadError(f"invalid upload name: {raw!r}")
     if len(name) > _MAX_NAME_LENGTH:

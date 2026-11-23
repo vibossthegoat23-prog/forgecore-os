@@ -77,8 +77,8 @@ def test_status_reports_measured_vault_entries(
     home = Home(tmp_path / "home")
     vault = Vault(home.vault_dir)
     if AVAILABLE:
-        vault.put("one", b"a", "pw", iterations=MIN_ITERATIONS)
-        vault.put("two", b"b", "pw", iterations=MIN_ITERATIONS)
+        vault.put("one", b"a", "console-password-1", iterations=MIN_ITERATIONS)
+        vault.put("two", b"b", "console-password-1", iterations=MIN_ITERATIONS)
 
     lines = render_status(snapshot(home))
     vault_line = next(line for line in lines if "Encrypted Vault" in line)
