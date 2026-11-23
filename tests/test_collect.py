@@ -369,6 +369,20 @@ def test_record_detail_and_missing_record(client: TestClient) -> None:
     assert client.get("/results/999999").status_code == 404
 
 
+def test_uploaded_file_can_be_imported_to_records(client: TestClient) -> None:
+    _login(client)
+    token = _csrf(client)
+    uploaded = client.post(
+        "/uploads",
+        data={"csrf_token": token},
+        files={"file": ("rows.csv", b"title\nuploaded row\n", "text/csv")},
+    )
+    assert uploaded.status_code == 303
+    imported = client.post("/uploads/rows.csv/import", data={"csrf_token": token})
+    assert imported.status_code == 303
+    assert "uploaded row" in client.get(imported.headers["location"]).text
+
+
 def test_delete_job_via_web(client: TestClient, server: str) -> None:
     _login(client)
     token = _csrf(client)

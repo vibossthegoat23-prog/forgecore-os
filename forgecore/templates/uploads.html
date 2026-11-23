@@ -41,6 +41,10 @@
         <td class="mono">{{ name }}</td>
         <td class="right">
           <a class="button" href="/uploads/{{ name }}">Download</a>
+          <form method="post" action="/uploads/{{ name }}/import" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Import to records</button>
+          </form>
           <form method="post" action="/uploads/{{ name }}/delete" class="inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="danger">Delete</button>

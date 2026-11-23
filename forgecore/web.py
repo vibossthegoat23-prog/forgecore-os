@@ -879,6 +879,47 @@ def create_app(home: Home | None = None) -> FastAPI:
             pass
         return redirect("/uploads")
 
+    @app.post("/uploads/{name}/import", response_class=HTMLResponse)
+    async def uploads_import(
+        name: str,
+        request: Request,
+        session: Session = Depends(require_session),
+        csrf_token: Annotated[str, Form()] = "",
+    ):
+        """Turn a stored upload into dataset rows so it is searchable/exportable."""
+        if not console.csrf_ok(session, csrf_token):
+            return page(request, "error.html", session=session, status_code=400,
+                        error="Invalid form token. Reload the page and try again.")
+        try:
+            payload = open_upload(console.home.uploads_dir, name)
+            summary = ingest_upload(console.dataset, name, payload)
+        except (UploadError, CollectError) as exc:
+            listing = paginate(
+                list_uploads(console.home.uploads_dir),
+                page_number(request),
+                UPLOADS_PAGE_SIZE,
+                "/uploads",
+            )
+            return page(
+                request,
+                "uploads.html",
+                session=session,
+                names=listing["items"],
+                pagination=listing,
+                limit_mb=MAX_UPLOAD_BYTES // (1024 * 1024),
+                storage=storage_context(),
+                status_code=400,
+                error=str(exc),
+            )
+        console.audit.record(
+            "upload.imported",
+            actor=_client_key(request),
+            name=name,
+            added=summary["added"],
+        )
+        console.mark_dirty()
+        return redirect(f"/results?job={summary['job_id']}", session=session)
+
     @app.get("/vault", response_class=HTMLResponse)
     async def vault_view(request: Request, session: Session = Depends(require_session)):
         listing = paginate(
