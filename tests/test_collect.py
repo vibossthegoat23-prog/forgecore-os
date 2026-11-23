@@ -164,7 +164,9 @@ def test_failed_fetch_is_recorded_not_raised(store: Store, server: str) -> None:
     assert store.recent_runs(5)[0]["status"] == "error"
 
 
-def test_job_names_are_validated(store: Store) -> None:
+def test_job_names_are_validated(store: Store, monkeypatch) -> None:
+    # Keep URL validation offline: this test is about the name rules.
+    monkeypatch.setenv(collect.ENV_ALLOW_PRIVATE, "1")
     with pytest.raises(CollectError):
         store.add_job("  ", "links", "https://e.com/")
     with pytest.raises(CollectError):
@@ -174,7 +176,8 @@ def test_job_names_are_validated(store: Store) -> None:
         store.add_job("dup", "links", "https://e.com/")
 
 
-def test_unknown_kind_is_refused(store: Store) -> None:
+def test_unknown_kind_is_refused(store: Store, monkeypatch) -> None:
+    monkeypatch.setenv(collect.ENV_ALLOW_PRIVATE, "1")
     with pytest.raises(CollectError):
         store.add_job("weird", "telepathy", "https://e.com/")
 
