@@ -1,5 +1,9 @@
-cryptography>=42,<49
-fastapi>=0.110,<1
-jinja2>=3.1,<4
-python-multipart>=0.0.9,<1
-uvicorn>=0.27,<1
+# Fully pinned so dependency scanning resolves every version.
+cryptography==48.0.0
+fastapi==0.165.0
+Jinja2==3.1.6
+python-multipart==0.0.34
+uvicorn==0.54.0
+# Transitive pins that the app's request path actually imports.
+pydantic==2.13.3
+starlette==1.10.0
