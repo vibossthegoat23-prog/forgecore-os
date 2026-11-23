@@ -56,7 +56,15 @@ MAX_MEMBERS = 5000
 # in the home root. These paths are declared explicitly because inferring them
 # once produced a backup that silently carried no key material at all.
 VAULT_KEY_FILES = ("master.key", "recovery.key", "vault.id")
-STATE_FILES = ("agents.json", "audit.log", "audit.log.1", "session.secret")
+STATE_FILES = (
+    "agents.json",
+    "audit.log",
+    "audit.log.1",
+    "session.secret",
+    # Without this the restored copy would still demand first-run setup and a
+    # fresh visitor could claim the console.
+    "console.json",
+)
 STATE_DIRS = ("vault", "uploads")
 # Every top-level name restore_backup() has to swap in one transaction.
 TOP_LEVEL = (*STATE_DIRS, *STATE_FILES)
@@ -296,10 +304,14 @@ def restore_backup(home: Home, data: bytes) -> dict[str, Any]:
         try:
             for name in TOP_LEVEL:
                 current = home.root / name
+                staged = staging / name
+                # An archive written before the console password was included
+                # must not wipe the password of the running installation.
+                if name == home.console_hash_file.name and not staged.exists():
+                    continue
                 if current.exists() or current.is_symlink():
                     os.replace(current, replaced / name)
                     moved.append(name)
-                staged = staging / name
                 if staged.exists():
                     os.replace(staged, current)
         except BaseException:
