@@ -6,6 +6,21 @@
   {{ limit_mb }} MiB per file.</p>
 
 <section class="card">
+  <h2>Capacity</h2>
+  <dl class="facts">
+    <div><dt>Stored</dt><dd>{{ storage.upload_count }} files &middot; {{ storage.used_label }}</dd></div>
+    <div><dt>Quota</dt><dd>{{ storage.used_label }} of {{ storage.quota_label }}
+      ({{ storage.percent_used }}%)</dd></div>
+    <div><dt>Disk free</dt><dd>{{ storage.free_label }}</dd></div>
+    <div><dt>Storage type</dt><dd>{% if storage.persistent %}Persistent{% else %}Ephemeral{% endif %}</dd></div>
+  </dl>
+  {% if not storage.persistent %}
+  <p class="warn small">Ephemeral storage: take a backup from the Backup page after
+    each run, because a redeploy clears these files.</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>Add a file</h2>
   <form method="post" action="/uploads" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -16,7 +31,7 @@
 </section>
 
 <section class="card">
-  <h2>Stored files ({{ names | length }})</h2>
+  <h2>Stored files ({{ pagination.total if pagination else names | length }})</h2>
   {% if names %}
   <table>
     <thead><tr><th>Name</th><th class="right">Actions</th></tr></thead>
@@ -38,5 +53,6 @@
   {% else %}
   <p class="muted">No files uploaded yet.</p>
   {% endif %}
+  {% include "_pager.html" %}
 </section>
 {% endblock %}

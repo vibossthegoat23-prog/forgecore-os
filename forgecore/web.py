@@ -250,14 +250,29 @@ def create_app(home: Home | None = None) -> FastAPI:
             request, template, base, status_code=status_code
         )
 
+    def _label(value: int | None) -> str:
+        if not value:
+            return "0 B"
+        if value >= 1024 * 1024 * 1024:
+            return f"{value / (1024 * 1024 * 1024):.2f} GiB"
+        if value >= 1024 * 1024:
+            return f"{value / (1024 * 1024):.1f} MiB"
+        return f"{value / 1024:.0f} KiB"
+
     def storage_context() -> dict[str, Any]:
         count, total = stats(console.home.uploads_dir)
+        quota = upload_quota()
+        free = console.home.free_bytes()
         return {
             "persistent": console.home.storage_is_persistent(),
-            "free_bytes": console.home.free_bytes(),
+            "free_bytes": free,
             "upload_count": count,
             "upload_bytes": total,
-            "upload_quota_bytes": upload_quota(),
+            "upload_quota_bytes": quota,
+            "used_label": _label(total),
+            "quota_label": _label(quota),
+            "free_label": _label(free),
+            "percent_used": int(min(100, (total / quota * 100) if quota else 0)),
         }
 
     def page_number(request: Request) -> int:

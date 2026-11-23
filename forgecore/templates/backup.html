@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Backup &middot; {{ app_name }}{% endblock %}
+{% block body %}
+<h1>Backup &amp; restore</h1>
+<p class="muted">A backup is a single archive of the whole installation: wrapped key
+  material, encrypted vault entries, stored uploads, the agent registry and the
+  audit log. Every member is checksummed, so a truncated or edited archive is
+  refused instead of half-restored.</p>
+
+<section class="card">
+  <h2>What is stored now</h2>
+  <dl class="facts">
+    <div><dt>Uploads</dt><dd>{{ storage.upload_count }} files &middot; {{ storage.used_label }}</dd></div>
+    <div><dt>Quota used</dt><dd>{{ storage.percent_used }}% of {{ storage.quota_label }}</dd></div>
+    <div><dt>Disk free</dt><dd>{{ storage.free_label }}</dd></div>
+    <div><dt>Storage type</dt><dd>{% if storage.persistent %}Persistent{% else %}Ephemeral{% endif %}</dd></div>
+  </dl>
+  {% if not storage.persistent %}
+  <p class="warn small">This host has no persistent disk. Download a backup after every
+    collection run: a redeploy or restart clears everything above.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Download a backup</h2>
+  <p class="muted small">Uploads are stored as-is, so treat the archive as sensitive
+    material. Keep it somewhere you control.</p>
+  <form method="post" action="/backup/export">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Download backup</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Restore from a backup</h2>
+  <p class="muted small">Restoring replaces the current contents. The archive is fully
+    verified before anything is touched, and the previous state is kept until the
+    swap succeeds. Maximum archive size {{ backup_limit_mb }} MiB.</p>
+  <form method="post" action="/backup/restore" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="file">Backup archive</label>
+    <input id="file" name="file" type="file" accept=".gz,.tgz,.tar.gz,application/gzip" required>
+    <button type="submit" class="danger">Restore this backup</button>
+  </form>
+</section>
+{% endblock %}

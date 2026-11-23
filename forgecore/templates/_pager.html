@@ -1,0 +1,20 @@
+{# Shared pager. Requires a `pagination` mapping from the view. #}
+{% if pagination and (pagination.has_prev or pagination.has_next) %}
+<div class="pager">
+  {% if pagination.total is not none %}
+  <span class="muted small">Showing {{ pagination.start }}&ndash;{{ pagination.end }}
+    of {{ pagination.total }}</span>
+  {% else %}
+  <span class="muted small">Newest {{ pagination.end - pagination.start }} events</span>
+  {% endif %}
+  {% if pagination.has_prev %}
+  <a class="button" href="{{ pagination.base }}?page={{ pagination.page - 1 }}">Newer</a>
+  {% endif %}
+  {% if pagination.pages %}
+  <span class="mono small">{{ pagination.page }} / {{ pagination.pages }}</span>
+  {% endif %}
+  {% if pagination.has_next %}
+  <a class="button" href="{{ pagination.base }}?page={{ pagination.page + 1 }}">Older</a>
+  {% endif %}
+</div>
+{% endif %}

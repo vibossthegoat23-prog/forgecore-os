@@ -17,6 +17,7 @@
     <a href="/vault">Vault</a>
     <a href="/agents">Agents</a>
     <a href="/audit">Audit</a>
+    <a href="/backup">Backup</a>
   </nav>
   <form method="post" action="/logout" class="inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -25,6 +26,11 @@
   {% endif %}
 </header>
 <main>
+  {% if signed_in and not storage_persistent %}
+  <p class="warn">Ephemeral storage: this host has no persistent disk, so collected
+    files and vault entries are lost when the app is redeployed or recreated.
+    Download a backup from <a href="/backup">Backup</a> after each collection run.</p>
+  {% endif %}
   {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   {% block body %}{% endblock %}

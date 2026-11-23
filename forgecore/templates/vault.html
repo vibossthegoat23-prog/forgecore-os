@@ -39,7 +39,7 @@
 </section>
 
 <section class="card">
-  <h2>Entries ({{ entries | length }})</h2>
+  <h2>Entries ({{ pagination.total if pagination else (entries | length) }})</h2>
   {% if entries %}
   <table>
     <thead><tr><th>Name</th><th class="right">Actions</th></tr></thead>
@@ -61,6 +61,7 @@
   {% else %}
   <p class="muted">The vault is empty.</p>
   {% endif %}
+  {% include "_pager.html" %}
 </section>
 
 <div class="row">
